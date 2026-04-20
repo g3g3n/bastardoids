@@ -1,0 +1,197 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background:
+    radial-gradient(circle at top, rgba(30, 46, 74, 0.7), rgba(5, 8, 18, 0.95) 52%),
+    linear-gradient(180deg, #02040b, #050913 70%, #02040a);
+  color: #e8f3ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background-color: #02050c;
+}
+
+.hud-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.hud-bar {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  gap: 18px;
+  padding: 10px 14px;
+  border: 1px solid rgba(130, 173, 255, 0.28);
+  background: rgba(4, 9, 18, 0.65);
+  backdrop-filter: blur(8px);
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.afterburner-gauge {
+  position: absolute;
+  left: 18px;
+  bottom: 84px;
+  width: min(250px, calc(100vw - 36px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 176, 86, 0.28);
+  background: rgba(12, 8, 4, 0.72);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.afterburner-label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.afterburner-name {
+  color: #ffd0a0;
+}
+
+.afterburner-value {
+  color: #fff0ce;
+}
+
+.afterburner-track {
+  height: 10px;
+  border: 1px solid rgba(255, 208, 142, 0.2);
+  background: linear-gradient(180deg, rgba(24, 17, 10, 0.9), rgba(10, 8, 6, 0.96));
+  overflow: hidden;
+}
+
+.afterburner-fill {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #ff9531, #ffc05d 55%, #fff4c4);
+  box-shadow: 0 0 16px rgba(255, 170, 67, 0.35);
+}
+
+.afterburner-gauge.active {
+  border-color: rgba(255, 195, 96, 0.55);
+  box-shadow: 0 0 24px rgba(255, 124, 34, 0.16);
+}
+
+.afterburner-gauge.cooling .afterburner-fill {
+  box-shadow: 0 0 12px rgba(255, 198, 92, 0.22);
+}
+
+.crosshair {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  pointer-events: none;
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: "";
+  position: absolute;
+  background: #3dff79;
+  box-shadow: 0 0 10px rgba(61, 255, 121, 0.6);
+}
+
+.crosshair::before {
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 2px;
+}
+
+.crosshair::after {
+  top: 0;
+  left: 8px;
+  width: 2px;
+  height: 18px;
+}
+
+.menu {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(180deg, rgba(2, 5, 10, 0.6), rgba(2, 5, 10, 0.85)),
+    radial-gradient(circle at top, rgba(31, 52, 88, 0.28), transparent 52%);
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu-panel {
+  min-width: min(88vw, 420px);
+  padding: 32px 30px;
+  border: 1px solid rgba(123, 168, 255, 0.3);
+  background: rgba(4, 10, 18, 0.88);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+
+.menu-title {
+  margin: 0 0 10px;
+  font-size: clamp(32px, 5vw, 50px);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.menu-copy {
+  margin: 0 0 28px;
+  color: #b7cce9;
+  line-height: 1.5;
+}
+
+.menu-button {
+  width: 100%;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(110, 167, 255, 0.4);
+  background: linear-gradient(180deg, #0f1e38, #081424);
+  color: #f3f8ff;
+  font: inherit;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.menu-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(116, 207, 255, 0.65);
+  background: linear-gradient(180deg, #18315b, #0a182c);
+}
+
+.menu-button.secondary {
+  background: transparent;
+}
