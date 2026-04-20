@@ -2,21 +2,23 @@ import * as THREE from "three";
 import type {
   AsteroidEntity,
   AsteroidSize,
-  BackgroundStarTile,
   CollisionBody,
   LaserEntity,
   PlayerLines,
   PlayerShield,
   PlayerState,
   ReferenceGridBounds,
-  ReferenceGridTile,
   ThrusterEmitter,
   ThrusterName,
   ThrusterParticle,
   ThrusterStateMap,
 } from "./types";
+import { CameraRig } from "./camera/CameraRig";
 import { loadGameConfig } from "./config";
-import { requireElement } from "./utils";
+import { createPlayer } from "./player/createPlayer";
+import { GameUi } from "./ui/GameUi";
+import { BackgroundStars } from "./visuals/BackgroundStars";
+import { ReferenceGrid } from "./visuals/ReferenceGrid";
 
 const config = await loadGameConfig();
 const STORAGE_KEY = "bastardoids-highscore";
@@ -25,24 +27,22 @@ const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
 class BastardoidsApp {
   scene = new THREE.Scene();
   renderer: THREE.WebGLRenderer;
-  camera = new THREE.PerspectiveCamera(config.world.cameraFovDegrees ?? 58, 1, 0.1, 500);
+  ui: GameUi;
+  cameraRig = new CameraRig(config.world);
+  camera = this.cameraRig.camera;
   clock = new THREE.Clock();
   raycaster = new THREE.Raycaster();
   plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   pointerNdc = new THREE.Vector2(0, 0);
-  cameraFocus = new THREE.Vector3();
-  cameraTarget = new THREE.Vector3();
-  cameraVelocity = new THREE.Vector3();
+  cameraFocus = this.cameraRig.focus;
+  cameraTarget = this.cameraRig.target;
+  cameraVelocity = this.cameraRig.velocity;
   pointerWorld = new THREE.Vector3();
   keys = new Set<string>();
   asteroids = new Map<number, AsteroidEntity>();
   lasers = new Map<number, LaserEntity>();
-  gridRoot = new THREE.Group();
-  gridTiles: ReferenceGridTile[] = [];
-  gridCenter = new THREE.Vector3();
-  starsRoot = new THREE.Group();
-  starTiles: BackgroundStarTile[] = [];
-  starsCenter = new THREE.Vector3();
+  referenceGrid = new ReferenceGrid(config.world);
+  backgroundStars = new BackgroundStars(config.world);
   viewport = new THREE.Vector2();
   world = config.world;
   playerConfig = config.player;
@@ -51,10 +51,6 @@ class BastardoidsApp {
   physicsConfig = config.physics;
   thrusterConfig = config.thrusters;
   afterburnerConfig = config.afterburner;
-  gridTileWidth = 0;
-  gridTileDepth = 0;
-  starTileWidth = 0;
-  starTileDepth = 0;
   thrusterPoints: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> | null = null;
   thrusterParticlePool: ThrusterParticle[] = [];
   thrusterParticlePositions: Float32Array | null = null;
@@ -77,18 +73,6 @@ class BastardoidsApp {
     left: false,
     right: false,
   };
-  afterburnerGauge: HTMLDivElement;
-  afterburnerFill: HTMLDivElement;
-  afterburnerLabel: HTMLSpanElement;
-  root: HTMLDivElement;
-  hud: HTMLDivElement;
-  crosshair: HTMLDivElement;
-  menu: HTMLDivElement;
-  menuTitle: HTMLHeadingElement;
-  menuCopy: HTMLParagraphElement;
-  startButton: HTMLButtonElement;
-  quitButton: HTMLButtonElement;
-  highScoreLine: HTMLDivElement;
   player: PlayerState | null = null;
   playerLines: PlayerLines | null = null;
   playerShield: PlayerShield | null = null;
@@ -107,83 +91,14 @@ class BastardoidsApp {
   currentSpeedCap = this.playerConfig.maxSpeed;
 
   constructor(container: HTMLElement) {
-    this.root = document.createElement("div");
-    this.root.className = "hud-root";
+    this.ui = new GameUi(container);
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: "high-performance",
     });
-    this.renderer.domElement.className = "game-canvas";
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.root.append(this.renderer.domElement);
-
-    this.hud = document.createElement("div");
-    this.hud.className = "hud-bar";
-    this.root.append(this.hud);
-
-    this.afterburnerGauge = document.createElement("div");
-    this.afterburnerGauge.className = "afterburner-gauge";
-    this.afterburnerGauge.innerHTML = `
-      <div class="afterburner-label-row">
-        <span class="afterburner-name">Afterburner</span>
-        <span class="afterburner-value">100%</span>
-      </div>
-      <div class="afterburner-track">
-        <div class="afterburner-fill"></div>
-      </div>
-    `;
-    this.afterburnerFill = requireElement(
-      this.afterburnerGauge.querySelector<HTMLDivElement>(".afterburner-fill"),
-      "Afterburner fill element not found.",
-    );
-    this.afterburnerLabel = requireElement(
-      this.afterburnerGauge.querySelector<HTMLSpanElement>(".afterburner-value"),
-      "Afterburner value element not found.",
-    );
-    this.root.append(this.afterburnerGauge);
-
-    this.crosshair = document.createElement("div");
-    this.crosshair.className = "crosshair";
-    this.root.append(this.crosshair);
-
-    this.menu = document.createElement("div");
-    this.menu.className = "menu";
-    this.menu.innerHTML = `
-      <div class="menu-panel">
-        <h1 class="menu-title">Bastardoids</h1>
-        <p class="menu-copy">Wireframe prototype with mouse steering, inertial thrust, elastic-ish collisions, and persistent high score.</p>
-      </div>
-    `;
-
-    const panel = requireElement(this.menu.firstElementChild, "Menu panel not found.");
-    this.highScoreLine = document.createElement("div");
-    this.highScoreLine.className = "menu-copy";
-    panel.append(this.highScoreLine);
-
-    this.startButton = document.createElement("button");
-    this.startButton.className = "menu-button";
-    this.startButton.type = "button";
-    this.startButton.textContent = "Start";
-    panel.append(this.startButton);
-
-    this.quitButton = document.createElement("button");
-    this.quitButton.className = "menu-button secondary";
-    this.quitButton.type = "button";
-    this.quitButton.textContent = "Quit";
-    panel.append(this.quitButton);
-
-    this.root.append(this.menu);
-    container.append(this.root);
-
-    this.menuTitle = requireElement(
-      panel.querySelector<HTMLHeadingElement>(".menu-title"),
-      "Menu title element not found.",
-    );
-    this.menuCopy = requireElement(
-      panel.querySelector<HTMLParagraphElement>(".menu-copy"),
-      "Menu copy element not found.",
-    );
+    this.ui.attachRenderer(this.renderer.domElement);
 
     this.scene.background = new THREE.Color(0x02050c);
 
@@ -201,9 +116,8 @@ class BastardoidsApp {
     directional.position.set(30, 60, 20);
     this.scene.add(ambient, directional);
 
-    this.gridRoot.position.y = -0.2;
-    this.scene.add(this.gridRoot);
-    this.scene.add(this.starsRoot);
+    this.scene.add(this.referenceGrid.root);
+    this.scene.add(this.backgroundStars.root);
 
     this.setupThrusterParticles();
   }
@@ -255,15 +169,13 @@ class BastardoidsApp {
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("mousemove", this.onMouseMove);
     window.addEventListener("mousedown", this.onMouseDown);
-    this.startButton.addEventListener("click", () => this.startGame());
-    this.quitButton.addEventListener("click", () => this.quitToMenu());
+    this.ui.onStart(() => this.startGame());
+    this.ui.onQuit(() => this.quitToMenu());
   }
 
   onResize = (): void => {
     this.viewport.set(window.innerWidth, window.innerHeight);
-    this.camera.aspect = this.viewport.x / this.viewport.y;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.viewport.x, this.viewport.y);
+    this.cameraRig.resize(this.viewport, this.renderer);
     this.updateCrosshairPosition();
 
     if (this.player) {
@@ -291,8 +203,7 @@ class BastardoidsApp {
   onMouseMove = (event: MouseEvent): void => {
     this.pointerNdc.x = (event.clientX / window.innerWidth) * 2 - 1;
     this.pointerNdc.y = -(event.clientY / window.innerHeight) * 2 + 1;
-    this.crosshair.style.left = `${event.clientX}px`;
-    this.crosshair.style.top = `${event.clientY}px`;
+    this.ui.setCrosshairClientPosition(event.clientX, event.clientY);
     this.updatePointerWorld();
   };
 
@@ -317,7 +228,7 @@ class BastardoidsApp {
     this.clearEntities();
     this.createPlayer();
     this.updateHud();
-    this.menu.hidden = true;
+    this.ui.hideMenu();
     this.clock.start();
   }
 
@@ -338,74 +249,15 @@ class BastardoidsApp {
   }
 
   updateMenu(buttonLabel: string, copy?: string): void {
-    this.menu.hidden = false;
-    this.menuTitle.textContent = "Bastardoids";
-    this.menuCopy.textContent =
-      copy ??
-      "Wireframe prototype with mouse steering, inertial thrust, elastic-ish collisions, and persistent high score.";
-    this.startButton.textContent = buttonLabel;
-    this.highScoreLine.textContent = `High score: ${this.highScore}`;
+    this.ui.setMenuState(buttonLabel, this.highScore, copy);
   }
 
   createPlayer(): void {
-    const group = new THREE.Group();
-    const shipModel = new THREE.Group();
-    const shipPoints = [
-      new THREE.Vector3(0, 0, 3.4),
-      new THREE.Vector3(-1.9, 0, -2.3),
-      new THREE.Vector3(1.9, 0, -2.3),
-      new THREE.Vector3(0, 1.4, -0.7),
-    ];
-    const edges: Array<[number, number]> = [
-      [0, 1],
-      [0, 2],
-      [0, 3],
-      [1, 2],
-      [1, 3],
-      [2, 3],
-    ];
-
-    const vertices: number[] = [];
-    for (const [from, to] of edges) {
-      vertices.push(...shipPoints[from].toArray(), ...shipPoints[to].toArray());
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
-    const material = new THREE.LineBasicMaterial({ color: 0xffffff });
-    const lines = new THREE.LineSegments(geometry, material);
-    shipModel.scale.setScalar(this.playerConfig.visualScale ?? 1);
-    shipModel.add(lines);
-    group.add(shipModel);
-    this.playerLines = lines;
-
-    const shieldGeometry = new THREE.SphereGeometry(this.playerConfig.radius * 2.15, 14, 12);
-    const shieldMaterial = new THREE.MeshBasicMaterial({
-      color: 0x69d8ff,
-      transparent: true,
-      opacity: 0.18,
-      wireframe: true,
-      depthWrite: false,
-    });
-    const shield = new THREE.Mesh(shieldGeometry, shieldMaterial);
-    shield.visible = false;
-    group.add(shield);
-    this.playerShield = shield;
-
-    this.scene.add(group);
-    this.player = {
-      id: this.nextId++,
-      type: "player",
-      mass: this.playerConfig.mass,
-      radius: this.playerConfig.radius,
-      mesh: group,
-      position: new THREE.Vector3(),
-      velocity: new THREE.Vector3(),
-      yaw: 0,
-      yawVelocity: 0,
-      invulnerableUntil: 0,
-      alive: true,
-    } satisfies PlayerState;
+    const createdPlayer = createPlayer(this.playerConfig, this.nextId++);
+    this.player = createdPlayer.player;
+    this.playerLines = createdPlayer.playerLines;
+    this.playerShield = createdPlayer.playerShield;
+    this.scene.add(this.player.mesh);
 
     this.cameraFocus.set(0, 0, 0);
     this.cameraTarget.set(0, 0, 0);
@@ -899,44 +751,10 @@ class BastardoidsApp {
   }
 
   updateCamera(delta: number, force: boolean): void {
-    if (!this.player) {
-      return;
-    }
-
-    const lookDirection = this.getCameraLookDirection();
-    this.cameraTarget
-      .copy(this.player.position)
-      .addScaledVector(lookDirection, this.world.cameraLookAhead);
-    this.cameraTarget.y = 0;
-
-    if (force) {
-      this.cameraFocus.copy(this.cameraTarget);
-      this.cameraVelocity.set(0, 0, 0);
-    } else {
-      const springOffset = this.cameraTarget.clone().sub(this.cameraFocus);
-      springOffset.y = 0;
-      this.cameraVelocity.addScaledVector(springOffset, this.world.cameraTetherStrength * delta);
-      this.cameraVelocity.multiplyScalar(Math.exp(-this.world.cameraTetherDamping * delta));
-
-      const horizontalSpeed = Math.hypot(this.cameraVelocity.x, this.cameraVelocity.z);
-      if (horizontalSpeed > this.world.cameraMaxSpeed) {
-        const scale = this.world.cameraMaxSpeed / horizontalSpeed;
-        this.cameraVelocity.x *= scale;
-        this.cameraVelocity.z *= scale;
-      }
-
-      this.cameraFocus.addScaledVector(this.cameraVelocity, delta);
-      this.cameraFocus.y = 0;
-    }
-
-    this.camera.position.set(
-      this.cameraFocus.x,
-      this.getCameraHeight(),
-      this.cameraFocus.z + this.world.cameraDistance,
-    );
-    this.camera.lookAt(this.cameraFocus);
-    this.refreshReferenceGrid(force);
-    this.refreshBackgroundStars(force);
+    this.cameraRig.update(this.player, delta, force);
+    const viewBounds = this.cameraRig.getViewBounds();
+    this.referenceGrid.refresh(this.cameraFocus, viewBounds, force);
+    this.backgroundStars.refresh(this.cameraFocus, viewBounds, force);
   }
 
   updatePointerWorld(): void {
@@ -945,34 +763,25 @@ class BastardoidsApp {
   }
 
   updateCrosshairPosition(): void {
-    this.crosshair.style.left = `${((this.pointerNdc.x + 1) * this.viewport.x) / 2}px`;
-    this.crosshair.style.top = `${((1 - this.pointerNdc.y) * this.viewport.y) / 2}px`;
+    this.ui.updateCrosshairPosition(this.pointerNdc, this.viewport);
   }
 
   updateHud(): void {
-    const invulnerable =
-      this.player && this.player.invulnerableUntil > this.elapsed ? "Shielded" : "Live";
-    const velocityX = this.player ? this.player.velocity.x.toFixed(1) : "0.0";
-    const velocityZ = this.player ? this.player.velocity.z.toFixed(1) : "0.0";
-    this.hud.innerHTML = `
-      <span>Score ${this.score}</span>
-      <span>Lives ${this.lives}</span>
-      <span>State ${this.running ? invulnerable : "Menu"}</span>
-      <span>High ${this.highScore}</span>
-      <span>X vel ${velocityX}</span>
-      <span>Z vel ${velocityZ}</span>
-    `;
-
-    const afterburnerPercent = Math.round(
-      (this.afterburnerCharge / this.afterburnerConfig.maxDurationSeconds) * 100,
-    );
-    this.afterburnerFill.style.width = `${afterburnerPercent}%`;
-    this.afterburnerLabel.textContent = `${afterburnerPercent}%`;
-    this.afterburnerGauge.classList.toggle("active", this.afterburnerActive);
-    this.afterburnerGauge.classList.toggle(
-      "cooling",
-      !this.afterburnerActive && !this.afterburnerShiftHeld,
-    );
+    this.ui.updateHud({
+      score: this.score,
+      lives: this.lives,
+      running: this.running,
+      invulnerable: !!this.player && this.player.invulnerableUntil > this.elapsed,
+      highScore: this.highScore,
+      velocityX: this.player ? this.player.velocity.x : 0,
+      velocityZ: this.player ? this.player.velocity.z : 0,
+    });
+    this.ui.updateAfterburner({
+      charge: this.afterburnerCharge,
+      maxCharge: this.afterburnerConfig.maxDurationSeconds,
+      active: this.afterburnerActive,
+      cooling: !this.afterburnerActive && !this.afterburnerShiftHeld,
+    });
   }
 
   destroyAsteroid(asteroid: AsteroidEntity): void {
@@ -1016,35 +825,15 @@ class BastardoidsApp {
   }
 
   getWorldViewHeight(): number {
-    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
-    const distance = Math.abs(this.camera.position.y);
-    return 2 * Math.tan(vFov / 2) * distance;
+    return this.cameraRig.getWorldViewHeight();
   }
 
   getCameraHeight(): number {
-    if (Number.isFinite(this.world.cameraPitchDegrees)) {
-      const horizontalOffset = this.world.cameraDistance;
-      const pitchRadians = THREE.MathUtils.degToRad(this.world.cameraPitchDegrees);
-      const tangent = Math.tan(pitchRadians);
-      if (Math.abs(tangent) > 0.001) {
-        return horizontalOffset * tangent;
-      }
-    }
-
-    return this.world.cameraHeight;
+    return this.cameraRig.getCameraHeight();
   }
 
   getCameraLookDirection(): THREE.Vector3 {
-    if (!this.player) {
-      return new THREE.Vector3(0, 0, -1);
-    }
-
-    const velocityDirection = this.player.velocity.clone().setY(0);
-    if (velocityDirection.lengthSq() > 1) {
-      return velocityDirection.normalize();
-    }
-
-    return new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
+    return this.player ? this.cameraRig.getLookDirection(this.player) : new THREE.Vector3(0, 0, -1);
   }
 
   loadHighScore(): number {
@@ -1370,48 +1159,8 @@ class BastardoidsApp {
     this.player.velocity.addScaledVector(axis, appliedDelta);
   }
 
-  refreshReferenceGrid(force: boolean): void {
-    const cellSize = this.world.gridCellSize;
-    const viewBounds = this.getReferenceGridBounds();
-    const desiredWidth = Math.ceil(((viewBounds.halfWidth * 2) / cellSize)) * cellSize;
-    const desiredDepth = Math.ceil(((viewBounds.halfDepth * 2) / cellSize)) * cellSize;
-    const sizeChanged =
-      Math.abs(desiredWidth - this.gridTileWidth) > 0.001 ||
-      Math.abs(desiredDepth - this.gridTileDepth) > 0.001;
-
-    if (force || sizeChanged || this.gridTiles.length === 0) {
-      this.gridTileWidth = desiredWidth;
-      this.gridTileDepth = desiredDepth;
-      this.rebuildReferenceGrid();
-    }
-
-    this.positionReferenceGrid();
-  }
-
-  refreshBackgroundStars(force: boolean): void {
-    const viewBounds = this.getReferenceGridBounds();
-    const desiredWidth = Math.ceil(viewBounds.halfWidth * 2);
-    const desiredDepth = Math.ceil(viewBounds.halfDepth * 2);
-    const sizeChanged =
-      Math.abs(desiredWidth - this.starTileWidth) > 0.001 ||
-      Math.abs(desiredDepth - this.starTileDepth) > 0.001;
-
-    if (force || sizeChanged || this.starTiles.length === 0) {
-      this.starTileWidth = desiredWidth;
-      this.starTileDepth = desiredDepth;
-      this.rebuildBackgroundStars();
-    }
-
-    this.positionBackgroundStars();
-  }
-
   getReferenceGridBounds(): ReferenceGridBounds {
-    const viewHeight = this.getWorldViewHeight();
-    const viewWidth = viewHeight * this.camera.aspect;
-    return {
-      halfWidth: viewWidth / 2,
-      halfDepth: viewHeight / 2,
-    };
+    return this.cameraRig.getViewBounds();
   }
 
   getPlayerBounds(distanceScreens: number): ReferenceGridBounds {
@@ -1430,184 +1179,6 @@ class BastardoidsApp {
     const deltaX = Math.abs(position.x - this.player.position.x);
     const deltaZ = Math.abs(position.z - this.player.position.z);
     return deltaX > bounds.halfWidth || deltaZ > bounds.halfDepth;
-  }
-
-  rebuildReferenceGrid(): void {
-    for (const tile of this.gridTiles) {
-      tile.traverse((child: THREE.Object3D) => {
-        const disposableChild = child as THREE.Object3D & {
-          geometry?: THREE.BufferGeometry;
-          material?: THREE.Material | THREE.Material[];
-        };
-
-        if (disposableChild.geometry) {
-          disposableChild.geometry.dispose();
-        }
-        if (Array.isArray(disposableChild.material)) {
-          for (const material of disposableChild.material) {
-            material.dispose();
-          }
-        } else {
-          disposableChild.material?.dispose();
-        }
-      });
-    }
-
-    this.gridRoot.clear();
-    this.gridTiles = [];
-
-    for (let zIndex = -1; zIndex <= 1; zIndex += 1) {
-      for (let xIndex = -1; xIndex <= 1; xIndex += 1) {
-        const tile = this.buildGridTile();
-        tile.userData.offsetX = xIndex;
-        tile.userData.offsetZ = zIndex;
-        this.gridTiles.push(tile);
-        this.gridRoot.add(tile);
-      }
-    }
-  }
-
-  rebuildBackgroundStars(): void {
-    for (const tile of this.starTiles) {
-      tile.geometry.dispose();
-      tile.material.dispose();
-    }
-
-    this.starsRoot.clear();
-    this.starTiles = [];
-
-    for (let zIndex = -1; zIndex <= 1; zIndex += 1) {
-      for (let xIndex = -1; xIndex <= 1; xIndex += 1) {
-        const tile = this.buildStarTile();
-        tile.userData.offsetX = xIndex;
-        tile.userData.offsetZ = zIndex;
-        this.starTiles.push(tile);
-        this.starsRoot.add(tile);
-      }
-    }
-  }
-
-  buildStarTile(): BackgroundStarTile {
-    const starVertices: number[] = [];
-    const halfWidth = this.starTileWidth / 2;
-    const halfDepth = this.starTileDepth / 2;
-    for (let index = 0; index < this.world.backgroundStarsPerTile; index += 1) {
-      starVertices.push(
-        (Math.random() * 2 - 1) * halfWidth,
-        this.world.backgroundStarHeightMin +
-          Math.random() *
-            (this.world.backgroundStarHeightMax - this.world.backgroundStarHeightMin),
-        (Math.random() * 2 - 1) * halfDepth,
-      );
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(starVertices, 3));
-    return new THREE.Points(
-      geometry,
-      new THREE.PointsMaterial({
-        color: 0xbad8ff,
-        size: this.world.backgroundStarSize,
-        sizeAttenuation: true,
-      }),
-    );
-  }
-
-  buildGridTile(): ReferenceGridTile {
-    const group = new THREE.Group();
-    const minorVertices: number[] = [];
-    const majorVertices: number[] = [];
-    const halfWidth = this.gridTileWidth / 2;
-    const halfDepth = this.gridTileDepth / 2;
-    const cellSize = this.world.gridCellSize;
-    const majorEvery = this.world.gridMajorEvery;
-    const epsilon = 0.0001;
-    let columnIndex = 0;
-
-    for (let x = -halfWidth; x <= halfWidth + epsilon; x += cellSize) {
-      const target = columnIndex % majorEvery === 0 ? majorVertices : minorVertices;
-      target.push(x, 0, -halfDepth, x, 0, halfDepth);
-      columnIndex += 1;
-    }
-
-    let rowIndex = 0;
-    for (let z = -halfDepth; z <= halfDepth + epsilon; z += cellSize) {
-      const target = rowIndex % majorEvery === 0 ? majorVertices : minorVertices;
-      target.push(-halfWidth, 0, z, halfWidth, 0, z);
-      rowIndex += 1;
-    }
-
-    if (minorVertices.length > 0) {
-      const minorGeometry = new THREE.BufferGeometry();
-      minorGeometry.setAttribute("position", new THREE.Float32BufferAttribute(minorVertices, 3));
-      group.add(
-        new THREE.LineSegments(
-          minorGeometry,
-          new THREE.LineBasicMaterial({
-            color: 0x17304d,
-            transparent: true,
-            opacity: 0.55,
-          }),
-        ),
-      );
-    }
-
-    if (majorVertices.length > 0) {
-      const majorGeometry = new THREE.BufferGeometry();
-      majorGeometry.setAttribute("position", new THREE.Float32BufferAttribute(majorVertices, 3));
-      group.add(
-        new THREE.LineSegments(
-          majorGeometry,
-          new THREE.LineBasicMaterial({
-            color: 0x3f6fa6,
-            transparent: true,
-            opacity: 0.95,
-          }),
-        ),
-      );
-    }
-
-    return group;
-  }
-
-  positionReferenceGrid(): void {
-    if (this.gridTileWidth <= 0 || this.gridTileDepth <= 0) {
-      return;
-    }
-
-    this.gridCenter.set(
-      Math.round(this.cameraFocus.x / this.gridTileWidth) * this.gridTileWidth,
-      0,
-      Math.round(this.cameraFocus.z / this.gridTileDepth) * this.gridTileDepth,
-    );
-
-    for (const tile of this.gridTiles) {
-      tile.position.set(
-        this.gridCenter.x + tile.userData.offsetX * this.gridTileWidth,
-        0,
-        this.gridCenter.z + tile.userData.offsetZ * this.gridTileDepth,
-      );
-    }
-  }
-
-  positionBackgroundStars(): void {
-    if (this.starTileWidth <= 0 || this.starTileDepth <= 0) {
-      return;
-    }
-
-    this.starsCenter.set(
-      Math.round(this.cameraFocus.x / this.starTileWidth) * this.starTileWidth,
-      0,
-      Math.round(this.cameraFocus.z / this.starTileDepth) * this.starTileDepth,
-    );
-
-    for (const tile of this.starTiles) {
-      tile.position.set(
-        this.starsCenter.x + tile.userData.offsetX * this.starTileWidth,
-        0,
-        this.starsCenter.z + tile.userData.offsetZ * this.starTileDepth,
-      );
-    }
   }
 
   wrapAngle(angle: number): number {
