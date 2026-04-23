@@ -2,6 +2,8 @@
   "world": {
     "asteroidDistanceScreens": 5.0,
     "cameraFovDegrees": 48,
+    "cameraNear": 0.1,
+    "cameraFar": 5000,
     "cameraPitchDegrees": 50,
     "cameraDistance": 100,
     "cameraHeight": 60,
@@ -25,20 +27,14 @@
     "strafeThrust": 12,
     "maxSpeed": 32,
     "strafeMaxSpeed": 14,
+    "shipModel": "ship3",
+    "primaryWeapon": "plasmaOrb",
     "visualScale": 1.3,
     "turnRate": 10.8,
     "turnDamping": 4.2,
     "invulnerabilitySeconds": 2,
     "muzzleOffsetForward": 2.8,
     "muzzleOffsetSide": 1.25
-  },
-  "laser": {
-    "shotsPerSecond": 2,
-    "speed": 82,
-    "lifetimeSeconds": 1.2,
-    "radius": 0.38,
-    "visualLength": 2.2,
-    "visualWidth": 0.28
   },
   "thrusters": {
     "maxParticles": 320,
@@ -69,24 +65,6 @@
     "particleDensityMultiplier": 1.5,
     "particleLengthMultiplier": 1.5,
     "particleRampSeconds": 2
-  },
-  "asteroids": {
-    "large": {
-      "mass": 7,
-      "radius": 7.8,
-      "minSpeed": 8,
-      "maxSpeed": 14,
-      "rotationSpeedMin": 0.35,
-      "rotationSpeedMax": 0.9
-    },
-    "small": {
-      "mass": 4,
-      "radius": 4.4,
-      "minSpeed": 11,
-      "maxSpeed": 19,
-      "rotationSpeedMin": 0.6,
-      "rotationSpeedMax": 1.4
-    }
   },
   "spawning": {
     "basePerEightSeconds": 5,

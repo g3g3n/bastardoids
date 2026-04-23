@@ -3,8 +3,8 @@ import type {
   AsteroidEntity,
   AsteroidSize,
   CollisionBody,
-  LaserEntity,
   PlayerLines,
+  ProjectileEntity,
   PlayerShield,
   PlayerState,
   ReferenceGridBounds,
@@ -15,12 +15,16 @@ import type {
 } from "./types";
 import { CameraRig } from "./camera/CameraRig";
 import { loadGameConfig } from "./config";
+import { getAsteroidDefinition } from "./entities/asteroids/asteroidDefinitions";
+import { getWeaponDefinition } from "./entities/projectiles/weaponDefinitions";
 import { createPlayer } from "./player/createPlayer";
 import { GameUi } from "./ui/GameUi";
 import { BackgroundStars } from "./visuals/BackgroundStars";
 import { ReferenceGrid } from "./visuals/ReferenceGrid";
+import { createWeaponProjectileMesh } from "./visuals/Weapons";
+import { WorldScenery } from "./visuals/WorldScenery";
 
-const config = await loadGameConfig();
+const config = loadGameConfig();
 const STORAGE_KEY = "bastardoids-highscore";
 const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
 
@@ -40,13 +44,14 @@ class BastardoidsApp {
   pointerWorld = new THREE.Vector3();
   keys = new Set<string>();
   asteroids = new Map<number, AsteroidEntity>();
-  lasers = new Map<number, LaserEntity>();
+  projectiles = new Map<number, ProjectileEntity>();
   referenceGrid = new ReferenceGrid(config.world);
   backgroundStars = new BackgroundStars(config.world);
+  worldScenery = new WorldScenery();
   viewport = new THREE.Vector2();
   world = config.world;
   playerConfig = config.player;
-  laserConfig = config.laser;
+  weaponConfig = getWeaponDefinition(this.playerConfig.primaryWeapon);
   spawnConfig = config.spawning;
   physicsConfig = config.physics;
   thrusterConfig = config.thrusters;
@@ -118,6 +123,7 @@ class BastardoidsApp {
 
     this.scene.add(this.referenceGrid.root);
     this.scene.add(this.backgroundStars.root);
+    this.scene.add(this.worldScenery.root);
 
     this.setupThrusterParticles();
   }
@@ -188,7 +194,7 @@ class BastardoidsApp {
 
     if (event.code === "Space") {
       event.preventDefault();
-      this.tryFireLaser();
+      this.tryFirePrimaryWeapon();
     }
 
     if (!this.running && event.key === "Enter") {
@@ -209,7 +215,7 @@ class BastardoidsApp {
 
   onMouseDown = (): void => {
     if (this.running) {
-      this.tryFireLaser();
+      this.tryFirePrimaryWeapon();
     }
   };
 
@@ -271,7 +277,7 @@ class BastardoidsApp {
     position: THREE.Vector3,
     velocity: THREE.Vector3,
   ): AsteroidEntity {
-    const asteroidCfg = config.asteroids[size];
+    const asteroidCfg = getAsteroidDefinition(size);
     const geometry = this.buildAsteroidGeometry(size === "large" ? 18 : 13, asteroidCfg.radius);
     const material = new THREE.LineBasicMaterial({
       color: size === "large" ? 0xaed4ff : 0x7ab4ff,
@@ -285,6 +291,8 @@ class BastardoidsApp {
       size,
       mass: asteroidCfg.mass,
       radius: asteroidCfg.radius,
+      maxHealth: asteroidCfg.maxHealth,
+      health: asteroidCfg.maxHealth,
       mesh,
       position: position.clone(),
       velocity: velocity.clone(),
@@ -300,40 +308,28 @@ class BastardoidsApp {
     return asteroid;
   }
 
-  createLaser(position: THREE.Vector3, velocity: THREE.Vector3): LaserEntity {
-    const mesh = new THREE.Group();
-    const geometry = new THREE.CylinderGeometry(
-      this.laserConfig.visualWidth / 2,
-      this.laserConfig.visualWidth / 2,
-      this.laserConfig.visualLength,
-      10,
-    );
-    const material = new THREE.MeshBasicMaterial({
-      color: 0xff4343,
-      transparent: true,
-      opacity: 0.92,
-    });
-    const core = new THREE.Mesh(geometry, material);
-    core.rotation.x = Math.PI / 2;
-    mesh.add(core);
+  createProjectile(position: THREE.Vector3, velocity: THREE.Vector3): ProjectileEntity {
+    const mesh = createWeaponProjectileMesh(this.weaponConfig);
     mesh.position.copy(position);
     mesh.rotation.y = Math.atan2(velocity.x, velocity.z);
 
-    const laser: LaserEntity = {
+    const projectile: ProjectileEntity = {
       id: this.nextId++,
-      type: "laser",
-      mass: 0.05,
-      radius: this.laserConfig.radius,
+      type: "projectile",
+      weapon: this.weaponConfig.name,
+      mass: this.weaponConfig.mass,
+      damage: this.weaponConfig.damage,
+      radius: this.weaponConfig.radius,
       mesh,
       position: position.clone(),
       velocity: velocity.clone(),
-      expiresAt: this.elapsed + this.laserConfig.lifetimeSeconds,
+      expiresAt: this.elapsed + this.weaponConfig.lifetimeSeconds,
       alive: true,
     };
 
-    this.lasers.set(laser.id, laser);
+    this.projectiles.set(projectile.id, projectile);
     this.scene.add(mesh);
-    return laser;
+    return projectile;
   }
 
   buildAsteroidGeometry(pointCount: number, radius: number): THREE.BufferGeometry {
@@ -363,12 +359,12 @@ class BastardoidsApp {
     return geometry;
   }
 
-  tryFireLaser(): void {
+  tryFirePrimaryWeapon(): void {
     if (!this.running || !this.player) {
       return;
     }
 
-    const minDelay = 1 / this.laserConfig.shotsPerSecond;
+    const minDelay = 1 / this.weaponConfig.shotsPerSecond;
     if (this.elapsed - this.lastShotAt < minDelay) {
       return;
     }
@@ -379,15 +375,21 @@ class BastardoidsApp {
     const right = new THREE.Vector3(forward.z, 0, -forward.x);
     const baseVelocity = this.player.velocity
       .clone()
-      .add(forward.clone().multiplyScalar(this.laserConfig.speed));
+      .add(forward.clone().multiplyScalar(this.weaponConfig.speed));
     const muzzleForward = forward.clone().multiplyScalar(this.playerConfig.muzzleOffsetForward);
+
+    if (this.weaponConfig.name === "plasmaOrb") {
+      this.createProjectile(this.player.position.clone().add(muzzleForward), baseVelocity);
+      return;
+    }
+
     const sideOffset = right.clone().multiplyScalar(this.playerConfig.muzzleOffsetSide);
 
-    this.createLaser(
+    this.createProjectile(
       this.player.position.clone().add(muzzleForward).add(sideOffset),
       baseVelocity.clone(),
     );
-    this.createLaser(
+    this.createProjectile(
       this.player.position.clone().add(muzzleForward).sub(sideOffset),
       baseVelocity.clone(),
     );
@@ -416,8 +418,8 @@ class BastardoidsApp {
     this.integratePlayer(delta);
     this.updateThrusterParticles(delta);
     this.integrateAsteroids(delta);
-    this.integrateLasers(delta);
-    this.handleLaserHits();
+    this.integrateProjectiles(delta);
+    this.handleProjectileHits();
     this.handleObjectCollisions();
     this.cleanupFarObjects();
     this.updateCamera(delta, false);
@@ -560,39 +562,67 @@ class BastardoidsApp {
     }
   }
 
-  integrateLasers(delta: number): void {
-    for (const laser of [...this.lasers.values()]) {
-      laser.position.addScaledVector(laser.velocity, delta);
-      laser.mesh.position.copy(laser.position);
-      laser.mesh.rotation.y = Math.atan2(laser.velocity.x, laser.velocity.z);
+  integrateProjectiles(delta: number): void {
+    for (const projectile of [...this.projectiles.values()]) {
+      projectile.position.addScaledVector(projectile.velocity, delta);
+      projectile.mesh.position.copy(projectile.position);
+      projectile.mesh.rotation.y = Math.atan2(projectile.velocity.x, projectile.velocity.z);
 
-      if (this.elapsed >= laser.expiresAt) {
-        this.destroyLaser(laser);
+      if (this.elapsed >= projectile.expiresAt) {
+        this.destroyProjectile(projectile);
       }
     }
   }
 
-  handleLaserHits(): void {
-    for (const laser of [...this.lasers.values()]) {
+  handleProjectileHits(): void {
+    for (const projectile of [...this.projectiles.values()]) {
       for (const asteroid of [...this.asteroids.values()]) {
-        if (!laser.alive || !asteroid.alive) {
+        if (!projectile.alive || !asteroid.alive) {
           continue;
         }
 
-        const hitDistance = laser.radius + asteroid.radius;
-        if (laser.position.distanceToSquared(asteroid.position) > hitDistance * hitDistance) {
+        const hitDistance = projectile.radius + asteroid.radius;
+        if (projectile.position.distanceToSquared(asteroid.position) > hitDistance * hitDistance) {
           continue;
         }
 
-        this.destroyLaser(laser);
-        if (asteroid.size === "small") {
-          this.destroyAsteroid(asteroid);
-          this.score += 1;
-        } else {
-          this.splitLargeAsteroid(asteroid);
+        this.applyProjectileImpact(projectile, asteroid);
+        this.destroyProjectile(projectile);
+        asteroid.health -= projectile.damage;
+        if (asteroid.health <= 0) {
+          if (asteroid.size === "small") {
+            this.destroyAsteroid(asteroid);
+            this.score += 1;
+          } else {
+            this.splitLargeAsteroid(asteroid);
+          }
         }
         break;
       }
+    }
+  }
+
+  applyProjectileImpact(projectile: ProjectileEntity, asteroid: AsteroidEntity): void {
+    const combinedMass = asteroid.mass + projectile.mass;
+    if (combinedMass <= 0) {
+      return;
+    }
+
+    // Treat projectile hits as a partially inelastic impact so weapon mass and speed
+    // both contribute to nudging asteroid heading without producing extreme ricochets.
+    const postImpactVelocity = asteroid.velocity
+      .clone()
+      .multiplyScalar(asteroid.mass)
+      .addScaledVector(projectile.velocity, projectile.mass)
+      .multiplyScalar(1 / combinedMass);
+    asteroid.velocity.copy(postImpactVelocity);
+
+    const impactOffset = projectile.position.clone().sub(asteroid.position).setY(0);
+    if (impactOffset.lengthSq() > 0.0001) {
+      const tangent = new THREE.Vector3(-impactOffset.z, 0, impactOffset.x).normalize();
+      const tangentialSpeed = projectile.velocity.dot(tangent);
+      const spinImpulse = (tangentialSpeed * projectile.mass) / Math.max(asteroid.mass * asteroid.radius, 0.001);
+      asteroid.rotationSpeed += THREE.MathUtils.clamp(spinImpulse, -1.5, 1.5);
     }
   }
 
@@ -719,7 +749,7 @@ class BastardoidsApp {
     }
 
     const size = Math.random() < 0.45 ? "large" : "small";
-    const asteroidCfg = config.asteroids[size];
+    const asteroidCfg = getAsteroidDefinition(size);
     const toCenter = center.clone().sub(spawnPosition).setY(0).normalize();
     const angleOffset = (Math.random() - 0.5) * (Math.PI / 2.2);
     const velocity = toCenter
@@ -743,9 +773,9 @@ class BastardoidsApp {
       }
     }
 
-    for (const laser of [...this.lasers.values()]) {
-      if (this.isOutsidePlayerBounds(laser.position, bounds)) {
-        this.destroyLaser(laser);
+    for (const projectile of [...this.projectiles.values()]) {
+      if (this.isOutsidePlayerBounds(projectile.position, bounds)) {
+        this.destroyProjectile(projectile);
       }
     }
   }
@@ -790,21 +820,21 @@ class BastardoidsApp {
     this.scene.remove(asteroid.mesh);
   }
 
-  destroyLaser(laser: LaserEntity): void {
-    laser.alive = false;
-    this.lasers.delete(laser.id);
-    this.scene.remove(laser.mesh);
+  destroyProjectile(projectile: ProjectileEntity): void {
+    projectile.alive = false;
+    this.projectiles.delete(projectile.id);
+    this.scene.remove(projectile.mesh);
   }
 
   clearEntities(): void {
     for (const asteroid of this.asteroids.values()) {
       this.scene.remove(asteroid.mesh);
     }
-    for (const laser of this.lasers.values()) {
-      this.scene.remove(laser.mesh);
+    for (const projectile of this.projectiles.values()) {
+      this.scene.remove(projectile.mesh);
     }
     this.asteroids.clear();
-    this.lasers.clear();
+    this.projectiles.clear();
 
     if (this.player) {
       this.scene.remove(this.player.mesh);

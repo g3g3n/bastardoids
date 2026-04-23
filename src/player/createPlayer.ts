@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { PlayerConfig, PlayerLines, PlayerShield, PlayerState } from "../types";
+import { SHIP_MODELS } from "./shipModels";
 
 export interface CreatedPlayer {
   player: PlayerState;
@@ -10,24 +11,10 @@ export interface CreatedPlayer {
 export function createPlayer(playerConfig: PlayerConfig, nextId: number): CreatedPlayer {
   const group = new THREE.Group();
   const shipModel = new THREE.Group();
-  const shipPoints = [
-    new THREE.Vector3(0, 0, 3.4),
-    new THREE.Vector3(-1.9, 0, -2.3),
-    new THREE.Vector3(1.9, 0, -2.3),
-    new THREE.Vector3(0, 1.4, -0.7),
-  ];
-  const edges: Array<[number, number]> = [
-    [0, 1],
-    [0, 2],
-    [0, 3],
-    [1, 2],
-    [1, 3],
-    [2, 3],
-  ];
-
+  const selectedModel = SHIP_MODELS[playerConfig.shipModel] ?? SHIP_MODELS.ship1;
   const vertices: number[] = [];
-  for (const [from, to] of edges) {
-    vertices.push(...shipPoints[from].toArray(), ...shipPoints[to].toArray());
+  for (const [from, to] of selectedModel.segments) {
+    vertices.push(...from, ...to);
   }
 
   const geometry = new THREE.BufferGeometry();

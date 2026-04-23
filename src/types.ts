@@ -13,10 +13,21 @@ import type {
 
 export type AsteroidSize = "large" | "small";
 export type ThrusterName = "forward" | "reverse" | "left" | "right";
+export type ShipModelName = "ship1" | "ship2" | "ship3" | "ship4";
+export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
+export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
+export type VectorTuple = readonly [number, number, number];
+
+export interface ShipModelDefinition {
+  name: ShipModelName;
+  segments: ReadonlyArray<readonly [VectorTuple, VectorTuple]>;
+}
 
 export interface WorldConfig {
   asteroidDistanceScreens: number;
   cameraFovDegrees: number;
+  cameraNear: number;
+  cameraFar: number;
   cameraPitchDegrees: number;
   cameraDistance: number;
   cameraHeight: number;
@@ -41,6 +52,8 @@ export interface PlayerConfig {
   strafeThrust: number;
   maxSpeed: number;
   strafeMaxSpeed: number;
+  shipModel: ShipModelName;
+  primaryWeapon: WeaponName;
   visualScale: number;
   turnRate: number;
   turnDamping: number;
@@ -49,11 +62,15 @@ export interface PlayerConfig {
   muzzleOffsetSide: number;
 }
 
-export interface LaserConfig {
+export interface WeaponDefinition {
+  name: WeaponName;
+  visual: WeaponVisualName;
   shotsPerSecond: number;
   speed: number;
   lifetimeSeconds: number;
+  damage: number;
   radius: number;
+  mass: number;
   visualLength: number;
   visualWidth: number;
 }
@@ -90,18 +107,14 @@ export interface AfterburnerConfig {
   particleRampSeconds: number;
 }
 
-export interface AsteroidSizeConfig {
+export interface AsteroidDefinition {
   mass: number;
   radius: number;
+  maxHealth: number;
   minSpeed: number;
   maxSpeed: number;
   rotationSpeedMin: number;
   rotationSpeedMax: number;
-}
-
-export interface AsteroidsConfig {
-  large: AsteroidSizeConfig;
-  small: AsteroidSizeConfig;
 }
 
 export interface SpawningConfig {
@@ -119,10 +132,8 @@ export interface PhysicsConfig {
 export interface GameConfig {
   world: WorldConfig;
   player: PlayerConfig;
-  laser: LaserConfig;
   thrusters: ThrusterConfig;
   afterburner: AfterburnerConfig;
-  asteroids: AsteroidsConfig;
   spawning: SpawningConfig;
   physics: PhysicsConfig;
 }
@@ -147,6 +158,8 @@ export interface AsteroidEntity {
   size: AsteroidSize;
   mass: number;
   radius: number;
+  maxHealth: number;
+  health: number;
   mesh: LineSegments<BufferGeometry, LineBasicMaterial>;
   position: Vector3;
   velocity: Vector3;
@@ -155,10 +168,12 @@ export interface AsteroidEntity {
   alive: boolean;
 }
 
-export interface LaserEntity {
+export interface ProjectileEntity {
   id: number;
-  type: "laser";
+  type: "projectile";
+  weapon: WeaponName;
   mass: number;
+  damage: number;
   radius: number;
   mesh: Group;
   position: Vector3;

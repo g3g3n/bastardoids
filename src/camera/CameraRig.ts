@@ -10,7 +10,12 @@ export class CameraRig {
 
   constructor(world: WorldConfig) {
     this.world = world;
-    this.camera = new THREE.PerspectiveCamera(world.cameraFovDegrees ?? 58, 1, 0.1, 500);
+    this.camera = new THREE.PerspectiveCamera(
+      world.cameraFovDegrees ?? 58,
+      1,
+      world.cameraNear,
+      world.cameraFar,
+    );
   }
 
   resize(viewport: THREE.Vector2, renderer: THREE.WebGLRenderer): void {
