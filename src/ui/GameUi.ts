@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { PerformanceSnapshot } from "../PerformanceMonitor";
 import { requireElement } from "../utils";
 
 const DEFAULT_MENU_COPY =
@@ -12,6 +13,7 @@ export interface HudSnapshot {
   highScore: number;
   velocityX: number;
   velocityZ: number;
+  performance: PerformanceSnapshot | null;
 }
 
 export interface AfterburnerSnapshot {
@@ -139,6 +141,14 @@ export class GameUi {
         : "Live"
       : "Menu";
 
+    const performanceStats = snapshot.performance
+      ? `
+      <span>FPS ${snapshot.performance.fps.toFixed(0)}</span>
+      <span>Frame ${snapshot.performance.frameMs.toFixed(1)}ms</span>
+      <span>Work ${snapshot.performance.workMs.toFixed(1)}ms</span>
+    `
+      : "";
+
     this.hud.innerHTML = `
       <span>Score ${snapshot.score}</span>
       <span>Lives ${snapshot.lives}</span>
@@ -146,6 +156,7 @@ export class GameUi {
       <span>High ${snapshot.highScore}</span>
       <span>X vel ${snapshot.velocityX.toFixed(1)}</span>
       <span>Z vel ${snapshot.velocityZ.toFixed(1)}</span>
+      ${performanceStats}
     `;
   }
 

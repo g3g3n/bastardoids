@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { PlayerConfig, PlayerLines, PlayerShield, PlayerState } from "../types";
-import { SHIP_MODELS } from "./shipModels";
+import { createShipVisual } from "../visuals/createShipVisual";
 
 export interface CreatedPlayer {
   player: PlayerState;
@@ -9,24 +9,9 @@ export interface CreatedPlayer {
 }
 
 export function createPlayer(playerConfig: PlayerConfig, nextId: number): CreatedPlayer {
-  const group = new THREE.Group();
-  const shipModel = new THREE.Group();
-  const selectedModel = SHIP_MODELS[playerConfig.shipModel] ?? SHIP_MODELS.ship1;
-  const vertices: number[] = [];
-  for (const [from, to] of selectedModel.segments) {
-    vertices.push(...from, ...to);
-  }
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
-  const material = new THREE.LineBasicMaterial({ color: 0xffffff });
-  const lines = new THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>(
-    geometry,
-    material,
-  );
-  shipModel.scale.setScalar(playerConfig.visualScale ?? 1);
-  shipModel.add(lines);
-  group.add(shipModel);
+  const createdVisual = createShipVisual(playerConfig.shipModel, playerConfig.visualScale, 0xffffff);
+  const group = createdVisual.group;
+  const lines = createdVisual.lines;
 
   const shieldGeometry = new THREE.SphereGeometry(playerConfig.radius * 2.15, 14, 12);
   const shieldMaterial = new THREE.MeshBasicMaterial({
@@ -46,6 +31,7 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
   const player: PlayerState = {
     id: nextId,
     type: "player",
+    faction: "player",
     mass: playerConfig.mass,
     radius: playerConfig.radius,
     mesh: group,

@@ -1,4 +1,5 @@
 {
+  "debugMode": true,
   "world": {
     "asteroidDistanceScreens": 5.0,
     "cameraFovDegrees": 48,

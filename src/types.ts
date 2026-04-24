@@ -16,6 +16,18 @@ export type ThrusterName = "forward" | "reverse" | "left" | "right";
 export type ShipModelName = "ship1" | "ship2" | "ship3" | "ship4";
 export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
 export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
+export type Faction = "player" | "enemy";
+export type EnemyShipName = "hunter";
+export type EnemyTactic =
+  | "closeToRange"
+  | "holdRange"
+  | "orbitLeft"
+  | "orbitRight"
+  | "breakAway"
+  | "evadeCollision"
+  | "dodgeProjectile"
+  | "repositionBehind"
+  | "returnToSpawn";
 export type VectorTuple = readonly [number, number, number];
 
 export interface ShipModelDefinition {
@@ -43,9 +55,8 @@ export interface WorldConfig {
   backgroundStarSize: number;
 }
 
-export interface PlayerConfig {
+export interface ShipMovementConfig {
   mass: number;
-  lives: number;
   radius: number;
   thrust: number;
   reverseThrust: number;
@@ -57,9 +68,13 @@ export interface PlayerConfig {
   visualScale: number;
   turnRate: number;
   turnDamping: number;
-  invulnerabilitySeconds: number;
   muzzleOffsetForward: number;
   muzzleOffsetSide: number;
+}
+
+export interface PlayerConfig extends ShipMovementConfig {
+  lives: number;
+  invulnerabilitySeconds: number;
 }
 
 export interface WeaponDefinition {
@@ -73,6 +88,15 @@ export interface WeaponDefinition {
   mass: number;
   visualLength: number;
   visualWidth: number;
+}
+
+export interface ShipControlIntent {
+  targetYaw: number | null;
+  forwardThrottle: number;
+  reverseThrottle: number;
+  strafe: number;
+  useAfterburner: boolean;
+  firePrimary: boolean;
 }
 
 export interface ThrusterConfig {
@@ -130,6 +154,7 @@ export interface PhysicsConfig {
 }
 
 export interface GameConfig {
+  debugMode: boolean;
   world: WorldConfig;
   player: PlayerConfig;
   thrusters: ThrusterConfig;
@@ -138,31 +163,105 @@ export interface GameConfig {
   physics: PhysicsConfig;
 }
 
-export interface PlayerState {
+export interface ShipStateBase {
   id: number;
-  type: "player";
   mass: number;
   radius: number;
+  faction: Faction;
   mesh: Group;
   position: Vector3;
   velocity: Vector3;
   yaw: number;
   yawVelocity: number;
-  invulnerableUntil: number;
   alive: boolean;
+}
+
+export interface PlayerState extends ShipStateBase {
+  type: "player";
+  faction: "player";
+  invulnerableUntil: number;
+}
+
+export interface EnemyShipDefinition extends ShipMovementConfig {
+  name: EnemyShipName;
+  maxHealth: number;
+  engageRadius: number;
+  fireRadius: number;
+  preferredRangeMin: number;
+  preferredRangeMax: number;
+  decisionInterval: number;
+  farDecisionInterval: number;
+  aimToleranceDegrees: number;
+  avoidanceWeight: number;
+  orbitWeight: number;
+  behindWeight: number;
+  projectileAvoidanceWeight: number;
+  separationWeight: number;
+  tacticLockSeconds: number;
+  pursuitLoseSeconds: number;
+  returnHomeRadius: number;
+  scoreValue: number;
+  lineColor: number;
+}
+
+export interface EnemyPerceptionSnapshot {
+  distanceToPlayer: number;
+  relativeBearing: number;
+  playerVelocity: Vector3;
+  predictedInterceptPoint: Vector3;
+  nearestAsteroidThreatDistance: number;
+  nearestAsteroidThreatPosition: Vector3 | null;
+  nearestProjectileThreatDistance: number;
+  nearestProjectileThreatPosition: Vector3 | null;
+  nearestEnemySeparationDistance: number;
+  nearestEnemySeparationPosition: Vector3 | null;
+  timeToCollisionPlayer: number;
+  timeToCollisionAsteroid: number;
+}
+
+export interface EnemyBlackboard {
+  preferredRange: number;
+  orbitDirection: -1 | 1;
+  slotAngle: number;
+  currentTactic: EnemyTactic;
+  engaged: boolean;
+  disengageAt: number;
+  decisionLockUntil: number;
+  nextDecisionAt: number;
+  nextPerceptionUpdateAt: number;
+  nextFireAt: number;
+  spawnPoint: Vector3;
+  perception: EnemyPerceptionSnapshot;
+}
+
+export interface ShipThrusterRuntime {
+  inputState: ThrusterStateMap<boolean>;
+  holdTime: ThrusterStateMap<number>;
+  emissionCarry: ThrusterStateMap<number>;
+}
+
+export interface EnemyShipEntity extends ShipStateBase {
+  type: "enemyShip";
+  faction: "enemy";
+  name: EnemyShipName;
+  maxHealth: number;
+  health: number;
+  definition: EnemyShipDefinition;
+  blackboard: EnemyBlackboard;
+  thrusterState: ShipThrusterRuntime;
 }
 
 export interface AsteroidEntity {
   id: number;
   type: "asteroid";
-  size: AsteroidSize;
   mass: number;
   radius: number;
-  maxHealth: number;
-  health: number;
   mesh: LineSegments<BufferGeometry, LineBasicMaterial>;
   position: Vector3;
   velocity: Vector3;
+  size: AsteroidSize;
+  maxHealth: number;
+  health: number;
   rotationAxis: Vector3;
   rotationSpeed: number;
   alive: boolean;
@@ -171,7 +270,9 @@ export interface AsteroidEntity {
 export interface ProjectileEntity {
   id: number;
   type: "projectile";
+  ownerId: number;
   weapon: WeaponName;
+  faction: Faction;
   mass: number;
   damage: number;
   radius: number;
@@ -203,9 +304,11 @@ export interface ReferenceGridBounds {
   halfDepth: number;
 }
 
-export type CollisionBody = PlayerState | AsteroidEntity;
+export type CollisionBody = PlayerState | EnemyShipEntity | AsteroidEntity;
+export type ShipEntity = PlayerState | EnemyShipEntity;
 export type ThrusterStateMap<T> = Record<ThrusterName, T>;
 export type BackgroundStarTile = Points<BufferGeometry, PointsMaterial>;
 export type ReferenceGridTile = Group;
-export type PlayerLines = LineSegments<BufferGeometry, LineBasicMaterial>;
+export type ShipLines = LineSegments<BufferGeometry, LineBasicMaterial>;
+export type PlayerLines = ShipLines;
 export type PlayerShield = Mesh<SphereGeometry, MeshBasicMaterial>;

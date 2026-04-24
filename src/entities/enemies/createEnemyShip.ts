@@ -1,0 +1,111 @@
+import * as THREE from "three";
+import type {
+  EnemyPerceptionSnapshot,
+  EnemyShipDefinition,
+  EnemyShipEntity,
+  ShipThrusterRuntime,
+  ShipLines,
+} from "../../types";
+import { createShipVisual } from "../../visuals/createShipVisual";
+
+export interface CreatedEnemyShip {
+  enemy: EnemyShipEntity;
+  lines: ShipLines;
+}
+
+function createEmptyPerception(): EnemyPerceptionSnapshot {
+  return {
+    distanceToPlayer: Infinity,
+    relativeBearing: 0,
+    playerVelocity: new THREE.Vector3(),
+    predictedInterceptPoint: new THREE.Vector3(),
+    nearestAsteroidThreatDistance: Infinity,
+    nearestAsteroidThreatPosition: null,
+    nearestProjectileThreatDistance: Infinity,
+    nearestProjectileThreatPosition: null,
+    nearestEnemySeparationDistance: Infinity,
+    nearestEnemySeparationPosition: null,
+    timeToCollisionPlayer: Infinity,
+    timeToCollisionAsteroid: Infinity,
+  };
+}
+
+function createEmptyThrusterState(): ShipThrusterRuntime {
+  return {
+    inputState: {
+      forward: false,
+      reverse: false,
+      left: false,
+      right: false,
+    },
+    holdTime: {
+      forward: 0,
+      reverse: 0,
+      left: 0,
+      right: 0,
+    },
+    emissionCarry: {
+      forward: 0,
+      reverse: 0,
+      left: 0,
+      right: 0,
+    },
+  };
+}
+
+export function createEnemyShip(
+  definition: EnemyShipDefinition,
+  nextId: number,
+  position: THREE.Vector3,
+): CreatedEnemyShip {
+  const createdVisual = createShipVisual(
+    definition.shipModel,
+    definition.visualScale,
+    definition.lineColor,
+  );
+  createdVisual.group.position.copy(position);
+
+  const preferredRange =
+    definition.preferredRangeMin +
+    (definition.preferredRangeMax - definition.preferredRangeMin) * 0.5;
+  const slotAngle = (nextId * 2.399963229728653) % (Math.PI * 2);
+
+  const enemy: EnemyShipEntity = {
+    id: nextId,
+    type: "enemyShip",
+    faction: "enemy",
+    name: definition.name,
+    mass: definition.mass,
+    radius: definition.radius,
+    maxHealth: definition.maxHealth,
+    health: definition.maxHealth,
+    definition,
+    mesh: createdVisual.group,
+    position: position.clone(),
+    velocity: new THREE.Vector3(),
+    yaw: Math.PI / 2,
+    yawVelocity: 0,
+    alive: true,
+    blackboard: {
+      preferredRange,
+      orbitDirection: nextId % 2 === 0 ? 1 : -1,
+      slotAngle,
+      currentTactic: "closeToRange",
+      engaged: false,
+      disengageAt: 0,
+      decisionLockUntil: 0,
+      nextDecisionAt: 0,
+      nextPerceptionUpdateAt: 0,
+      nextFireAt: 0,
+      spawnPoint: position.clone(),
+      perception: createEmptyPerception(),
+    },
+    thrusterState: createEmptyThrusterState(),
+  };
+  enemy.mesh.rotation.y = enemy.yaw;
+
+  return {
+    enemy,
+    lines: createdVisual.lines,
+  };
+}

@@ -3,23 +3,32 @@ import type {
   AsteroidEntity,
   AsteroidSize,
   CollisionBody,
+  EnemyShipEntity,
   PlayerLines,
   ProjectileEntity,
   PlayerShield,
   PlayerState,
   ReferenceGridBounds,
+  ShipControlIntent,
+  ShipEntity,
   ThrusterEmitter,
   ThrusterName,
   ThrusterParticle,
   ThrusterStateMap,
 } from "./types";
+import { updateEnemyAi } from "./ai/enemyShipAi";
 import { CameraRig } from "./camera/CameraRig";
 import { loadGameConfig } from "./config";
 import { getAsteroidDefinition } from "./entities/asteroids/asteroidDefinitions";
+import { createEnemyShip } from "./entities/enemies/createEnemyShip";
+import { getEnemyShipDefinition } from "./entities/enemies/enemyDefinitions";
 import { getWeaponDefinition } from "./entities/projectiles/weaponDefinitions";
+import { applyShipControl, getShipBasis, wrapAngle } from "./entities/ships/shipController";
+import { PerformanceMonitor } from "./PerformanceMonitor";
 import { createPlayer } from "./player/createPlayer";
 import { GameUi } from "./ui/GameUi";
 import { BackgroundStars } from "./visuals/BackgroundStars";
+import { ExplosionSystem } from "./visuals/ExplosionSystem";
 import { ReferenceGrid } from "./visuals/ReferenceGrid";
 import { createWeaponProjectileMesh } from "./visuals/Weapons";
 import { WorldScenery } from "./visuals/WorldScenery";
@@ -44,14 +53,18 @@ class BastardoidsApp {
   pointerWorld = new THREE.Vector3();
   keys = new Set<string>();
   asteroids = new Map<number, AsteroidEntity>();
+  enemies = new Map<number, EnemyShipEntity>();
   projectiles = new Map<number, ProjectileEntity>();
   referenceGrid = new ReferenceGrid(config.world);
   backgroundStars = new BackgroundStars(config.world);
   worldScenery = new WorldScenery();
+  explosionSystem = new ExplosionSystem();
   viewport = new THREE.Vector2();
   world = config.world;
+  debugMode = config.debugMode;
+  performanceMonitor = new PerformanceMonitor();
   playerConfig = config.player;
-  weaponConfig = getWeaponDefinition(this.playerConfig.primaryWeapon);
+  playerWeaponConfig = getWeaponDefinition(this.playerConfig.primaryWeapon);
   spawnConfig = config.spawning;
   physicsConfig = config.physics;
   thrusterConfig = config.thrusters;
@@ -124,6 +137,7 @@ class BastardoidsApp {
     this.scene.add(this.referenceGrid.root);
     this.scene.add(this.backgroundStars.root);
     this.scene.add(this.worldScenery.root);
+    this.scene.add(this.explosionSystem.root);
 
     this.setupThrusterParticles();
   }
@@ -233,6 +247,7 @@ class BastardoidsApp {
     this.currentSpeedCap = this.playerConfig.maxSpeed;
     this.clearEntities();
     this.createPlayer();
+    this.createHunter();
     this.updateHud();
     this.ui.hideMenu();
     this.clock.start();
@@ -272,6 +287,17 @@ class BastardoidsApp {
     this.updatePointerWorld();
   }
 
+  createHunter(): void {
+    const definition = getEnemyShipDefinition("hunter");
+    const createdEnemy = createEnemyShip(
+      definition,
+      this.nextId++,
+      new THREE.Vector3(200, 0, 0),
+    );
+    this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
+    this.scene.add(createdEnemy.enemy.mesh);
+  }
+
   createAsteroid(
     size: AsteroidSize,
     position: THREE.Vector3,
@@ -308,22 +334,31 @@ class BastardoidsApp {
     return asteroid;
   }
 
-  createProjectile(position: THREE.Vector3, velocity: THREE.Vector3): ProjectileEntity {
-    const mesh = createWeaponProjectileMesh(this.weaponConfig);
+  createProjectile(
+    ownerId: number,
+    faction: "player" | "enemy",
+    weaponName: ProjectileEntity["weapon"],
+    position: THREE.Vector3,
+    velocity: THREE.Vector3,
+  ): ProjectileEntity {
+    const weaponDefinition = getWeaponDefinition(weaponName);
+    const mesh = createWeaponProjectileMesh(weaponDefinition);
     mesh.position.copy(position);
     mesh.rotation.y = Math.atan2(velocity.x, velocity.z);
 
     const projectile: ProjectileEntity = {
       id: this.nextId++,
       type: "projectile",
-      weapon: this.weaponConfig.name,
-      mass: this.weaponConfig.mass,
-      damage: this.weaponConfig.damage,
-      radius: this.weaponConfig.radius,
+      ownerId,
+      weapon: weaponDefinition.name,
+      faction,
+      mass: weaponDefinition.mass,
+      damage: weaponDefinition.damage,
+      radius: weaponDefinition.radius,
       mesh,
       position: position.clone(),
       velocity: velocity.clone(),
-      expiresAt: this.elapsed + this.weaponConfig.lifetimeSeconds,
+      expiresAt: this.elapsed + weaponDefinition.lifetimeSeconds,
       alive: true,
     };
 
@@ -364,50 +399,76 @@ class BastardoidsApp {
       return;
     }
 
-    const minDelay = 1 / this.weaponConfig.shotsPerSecond;
+    const minDelay = 1 / this.playerWeaponConfig.shotsPerSecond;
     if (this.elapsed - this.lastShotAt < minDelay) {
       return;
     }
 
     this.lastShotAt = this.elapsed;
+    this.fireShipPrimaryWeapon(this.player, this.playerConfig);
+  }
 
-    const forward = new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
-    const right = new THREE.Vector3(forward.z, 0, -forward.x);
-    const baseVelocity = this.player.velocity
+  fireShipPrimaryWeapon(
+    ship: PlayerState | EnemyShipEntity,
+    shipConfig: {
+      primaryWeapon: ProjectileEntity["weapon"];
+      muzzleOffsetForward: number;
+      muzzleOffsetSide: number;
+    },
+  ): void {
+    const weaponDefinition = getWeaponDefinition(shipConfig.primaryWeapon);
+    const { forward, right } = getShipBasis(ship.yaw);
+    const baseVelocity = ship.velocity
       .clone()
-      .add(forward.clone().multiplyScalar(this.weaponConfig.speed));
-    const muzzleForward = forward.clone().multiplyScalar(this.playerConfig.muzzleOffsetForward);
+      .add(forward.clone().multiplyScalar(weaponDefinition.speed));
+    const muzzleForward = forward.clone().multiplyScalar(shipConfig.muzzleOffsetForward);
 
-    if (this.weaponConfig.name === "plasmaOrb") {
-      this.createProjectile(this.player.position.clone().add(muzzleForward), baseVelocity);
+    if (weaponDefinition.name === "plasmaOrb") {
+      this.createProjectile(
+        ship.id,
+        ship.faction,
+        weaponDefinition.name,
+        ship.position.clone().add(muzzleForward),
+        baseVelocity,
+      );
       return;
     }
 
-    const sideOffset = right.clone().multiplyScalar(this.playerConfig.muzzleOffsetSide);
+    const sideOffset = right.clone().multiplyScalar(shipConfig.muzzleOffsetSide);
 
     this.createProjectile(
-      this.player.position.clone().add(muzzleForward).add(sideOffset),
+      ship.id,
+      ship.faction,
+      weaponDefinition.name,
+      ship.position.clone().add(muzzleForward).add(sideOffset),
       baseVelocity.clone(),
     );
     this.createProjectile(
-      this.player.position.clone().add(muzzleForward).sub(sideOffset),
+      ship.id,
+      ship.faction,
+      weaponDefinition.name,
+      ship.position.clone().add(muzzleForward).sub(sideOffset),
       baseVelocity.clone(),
     );
   }
 
   animate = (): void => {
     requestAnimationFrame(this.animate);
+    this.performanceMonitor.beginFrame();
     const delta = Math.min(this.clock.getDelta() || 0.016, 0.033);
     if (this.running) {
       this.elapsed += delta;
       this.step(delta);
     }
+    this.explosionSystem.update(delta);
 
     this.renderer.render(this.scene, this.camera);
+    this.performanceMonitor.endFrame();
   };
 
   step(delta: number): void {
     this.handleInput(delta);
+    this.updateEnemyShips(delta);
     this.updateAfterburner(delta);
     this.spawnCooldown -= delta;
     if (this.spawnCooldown <= 0) {
@@ -416,6 +477,7 @@ class BastardoidsApp {
     }
 
     this.integratePlayer(delta);
+    this.integrateEnemyShips(delta);
     this.updateThrusterParticles(delta);
     this.integrateAsteroids(delta);
     this.integrateProjectiles(delta);
@@ -449,8 +511,6 @@ class BastardoidsApp {
     const strafingLeft = this.keys.has("a");
     const strafingRight = this.keys.has("d");
     const shiftHeld = this.keys.has("shift");
-    const forward = new THREE.Vector3(Math.sin(this.player.yaw), 0, Math.cos(this.player.yaw));
-    const right = new THREE.Vector3(forward.z, 0, -forward.x);
     const afterburnerEngaged = this.isAfterburnerEngaged(shiftHeld, thrustingForward);
     const boostedSpeedCap =
       this.playerConfig.maxSpeed * this.afterburnerConfig.maxSpeedMultiplier;
@@ -466,9 +526,6 @@ class BastardoidsApp {
       );
     }
     const activeSpeedCap = this.currentSpeedCap;
-    const forwardThrust =
-      this.playerConfig.thrust *
-      (afterburnerEngaged ? this.afterburnerConfig.thrustMultiplier : 1);
 
     this.thrusterInputState.forward = thrustingForward;
     this.thrusterInputState.reverse = thrustingReverse;
@@ -477,45 +534,22 @@ class BastardoidsApp {
     this.afterburnerShiftHeld = shiftHeld;
     this.afterburnerActive = afterburnerEngaged;
 
-    if (thrustingForward) {
-      this.player.velocity.addScaledVector(forward, forwardThrust * delta);
-    }
-
-    if (thrustingReverse) {
-      this.player.velocity.addScaledVector(forward, -this.playerConfig.reverseThrust * delta);
-    }
-
-    if (strafingLeft) {
-      this.applyAxisThrust(
-        right,
-        this.playerConfig.strafeThrust * delta,
-        this.playerConfig.strafeMaxSpeed,
-      );
-    }
-
-    if (strafingRight) {
-      this.applyAxisThrust(
-        right,
-        -this.playerConfig.strafeThrust * delta,
-        this.playerConfig.strafeMaxSpeed,
-      );
-    }
-
-    const speed = this.player.velocity.length();
-    if (speed > activeSpeedCap) {
-      this.player.velocity.setLength(activeSpeedCap);
-    }
-
     this.updatePointerWorld();
     const toPointer = this.pointerWorld.clone().sub(this.player.position);
-    if (toPointer.lengthSq() > 0.001) {
-      const targetYaw = Math.atan2(toPointer.x, toPointer.z);
-      const difference = this.wrapAngle(targetYaw - this.player.yaw);
-      this.player.yawVelocity += difference * this.playerConfig.turnRate * delta;
-      this.player.yawVelocity *= Math.exp(-this.playerConfig.turnDamping * delta);
-      this.player.yaw += this.player.yawVelocity * delta;
-      this.player.mesh.rotation.y = this.player.yaw;
-    }
+    const targetYaw = toPointer.lengthSq() > 0.001 ? Math.atan2(toPointer.x, toPointer.z) : null;
+    const playerIntent: ShipControlIntent = {
+      targetYaw,
+      forwardThrottle: thrustingForward ? 1 : 0,
+      reverseThrottle: thrustingReverse ? 1 : 0,
+      strafe: strafingLeft ? 1 : strafingRight ? -1 : 0,
+      useAfterburner: afterburnerEngaged,
+      firePrimary: false,
+    };
+
+    applyShipControl(this.player, this.playerConfig, playerIntent, delta, {
+      maxSpeedOverride: activeSpeedCap,
+      forwardThrustMultiplier: afterburnerEngaged ? this.afterburnerConfig.thrustMultiplier : 1,
+    });
   }
 
   integratePlayer(delta: number): void {
@@ -527,8 +561,49 @@ class BastardoidsApp {
     this.player.mesh.position.copy(this.player.position);
   }
 
+  updateEnemyShips(delta: number): void {
+    if (!this.player) {
+      return;
+    }
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      const intent = updateEnemyAi(enemy, {
+        player: this.player,
+        asteroids: this.asteroids.values(),
+        projectiles: this.projectiles.values(),
+        enemies: this.enemies.values(),
+        elapsed: this.elapsed,
+        delta,
+      });
+      this.syncEnemyThrusterState(enemy, intent);
+      applyShipControl(enemy, enemy.definition, intent, delta);
+
+      if (intent.firePrimary) {
+        this.fireShipPrimaryWeapon(enemy, enemy.definition);
+        const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
+        enemy.blackboard.nextFireAt = this.elapsed + 1 / weaponDefinition.shotsPerSecond;
+      }
+    }
+  }
+
+  integrateEnemyShips(delta: number): void {
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      enemy.position.addScaledVector(enemy.velocity, delta);
+      enemy.mesh.position.copy(enemy.position);
+    }
+  }
+
   updateThrusterParticles(delta: number): void {
-    this.updateThrusterHoldState(delta);
+    this.updatePlayerThrusterHoldState(delta);
+    this.updateEnemyThrusterHoldState(delta);
 
     for (const particle of this.thrusterParticlePool) {
       if (!particle.active) {
@@ -545,10 +620,21 @@ class BastardoidsApp {
     }
 
     if (this.player) {
-      this.emitThrusterParticles("forward", delta);
-      this.emitThrusterParticles("reverse", delta);
-      this.emitThrusterParticles("left", delta);
-      this.emitThrusterParticles("right", delta);
+      this.emitPlayerThrusterParticles("forward", delta);
+      this.emitPlayerThrusterParticles("reverse", delta);
+      this.emitPlayerThrusterParticles("left", delta);
+      this.emitPlayerThrusterParticles("right", delta);
+    }
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      this.emitEnemyThrusterParticles(enemy, "forward", delta);
+      this.emitEnemyThrusterParticles(enemy, "reverse", delta);
+      this.emitEnemyThrusterParticles(enemy, "left", delta);
+      this.emitEnemyThrusterParticles(enemy, "right", delta);
     }
 
     this.syncThrusterParticleGeometry();
@@ -576,62 +662,120 @@ class BastardoidsApp {
 
   handleProjectileHits(): void {
     for (const projectile of [...this.projectiles.values()]) {
-      for (const asteroid of [...this.asteroids.values()]) {
-        if (!projectile.alive || !asteroid.alive) {
-          continue;
-        }
+      if (!projectile.alive) {
+        continue;
+      }
 
-        const hitDistance = projectile.radius + asteroid.radius;
-        if (projectile.position.distanceToSquared(asteroid.position) > hitDistance * hitDistance) {
-          continue;
-        }
+      const target = this.findProjectileHitTarget(projectile);
+      if (!target) {
+        continue;
+      }
 
-        this.applyProjectileImpact(projectile, asteroid);
-        this.destroyProjectile(projectile);
-        asteroid.health -= projectile.damage;
-        if (asteroid.health <= 0) {
-          if (asteroid.size === "small") {
-            this.destroyAsteroid(asteroid);
+      this.applyProjectileImpact(projectile, target);
+      this.destroyProjectile(projectile);
+
+      if (target.type === "asteroid") {
+        target.health -= projectile.damage;
+        if (target.health <= 0) {
+          if (target.size === "small") {
+            this.destroyAsteroid(target);
             this.score += 1;
           } else {
-            this.splitLargeAsteroid(asteroid);
+            this.splitLargeAsteroid(target);
           }
         }
-        break;
+        continue;
       }
+
+      if (target.type === "enemyShip") {
+        target.health -= projectile.damage;
+        if (target.health <= 0) {
+          this.destroyEnemy(target);
+          this.score += target.definition.scoreValue;
+        }
+        continue;
+      }
+
+      this.handlePlayerDamage(projectile.damage);
     }
   }
 
-  applyProjectileImpact(projectile: ProjectileEntity, asteroid: AsteroidEntity): void {
-    const combinedMass = asteroid.mass + projectile.mass;
+  findProjectileHitTarget(
+    projectile: ProjectileEntity,
+  ): AsteroidEntity | EnemyShipEntity | PlayerState | null {
+    const candidates: Array<AsteroidEntity | EnemyShipEntity | PlayerState> = [
+      ...this.asteroids.values(),
+      ...this.enemies.values(),
+    ];
+
+    if (this.player) {
+      candidates.push(this.player);
+    }
+
+    let bestTarget: AsteroidEntity | EnemyShipEntity | PlayerState | null = null;
+    let bestDistanceSq = Infinity;
+
+    for (const candidate of candidates) {
+      if (!candidate.alive) {
+        continue;
+      }
+
+      if (candidate.type !== "asteroid" && candidate.faction === projectile.faction) {
+        continue;
+      }
+      if (candidate.type !== "asteroid" && candidate.id === projectile.ownerId) {
+        continue;
+      }
+
+      const hitDistance = projectile.radius + candidate.radius;
+      const distanceSq = projectile.position.distanceToSquared(candidate.position);
+      if (distanceSq > hitDistance * hitDistance || distanceSq >= bestDistanceSq) {
+        continue;
+      }
+
+      bestDistanceSq = distanceSq;
+      bestTarget = candidate;
+    }
+
+    return bestTarget;
+  }
+
+  applyProjectileImpact(
+    projectile: ProjectileEntity,
+    target: AsteroidEntity | EnemyShipEntity | PlayerState,
+  ): void {
+    const combinedMass = target.mass + projectile.mass;
     if (combinedMass <= 0) {
       return;
     }
 
-    // Treat projectile hits as a partially inelastic impact so weapon mass and speed
-    // both contribute to nudging asteroid heading without producing extreme ricochets.
-    const postImpactVelocity = asteroid.velocity
+    const postImpactVelocity = target.velocity
       .clone()
-      .multiplyScalar(asteroid.mass)
+      .multiplyScalar(target.mass)
       .addScaledVector(projectile.velocity, projectile.mass)
       .multiplyScalar(1 / combinedMass);
-    asteroid.velocity.copy(postImpactVelocity);
+    target.velocity.copy(postImpactVelocity);
 
-    const impactOffset = projectile.position.clone().sub(asteroid.position).setY(0);
+    if (target.type !== "asteroid") {
+      return;
+    }
+
+    const impactOffset = projectile.position.clone().sub(target.position).setY(0);
     if (impactOffset.lengthSq() > 0.0001) {
       const tangent = new THREE.Vector3(-impactOffset.z, 0, impactOffset.x).normalize();
       const tangentialSpeed = projectile.velocity.dot(tangent);
-      const spinImpulse = (tangentialSpeed * projectile.mass) / Math.max(asteroid.mass * asteroid.radius, 0.001);
-      asteroid.rotationSpeed += THREE.MathUtils.clamp(spinImpulse, -1.5, 1.5);
+      const spinImpulse =
+        (tangentialSpeed * projectile.mass) / Math.max(target.mass * target.radius, 0.001);
+      target.rotationSpeed += THREE.MathUtils.clamp(spinImpulse, -1.5, 1.5);
     }
   }
 
   handleObjectCollisions(): void {
-    if (!this.player) {
-      return;
-    }
-
-    const dynamicObjects: CollisionBody[] = [this.player, ...this.asteroids.values()];
+    const dynamicObjects: CollisionBody[] = [
+      ...this.asteroids.values(),
+      ...this.enemies.values(),
+      ...(this.player ? [this.player] : []),
+    ];
     for (let firstIndex = 0; firstIndex < dynamicObjects.length; firstIndex += 1) {
       for (let secondIndex = firstIndex + 1; secondIndex < dynamicObjects.length; secondIndex += 1) {
         const first = dynamicObjects[firstIndex];
@@ -672,25 +816,28 @@ class BastardoidsApp {
         second.mesh.position.copy(second.position);
 
         const playerHit =
-          (first.type === "player" && second.type === "asteroid") ||
-          (first.type === "asteroid" && second.type === "player");
+          (first.type === "player" && (second.type === "asteroid" || second.type === "enemyShip")) ||
+          (second.type === "player" && (first.type === "asteroid" || first.type === "enemyShip"));
         if (playerHit) {
-          this.handlePlayerAsteroidHit();
+          this.handlePlayerDamage(1);
         }
       }
     }
   }
 
-  handlePlayerAsteroidHit(): void {
+  handlePlayerDamage(amount: number): void {
     if (!this.player || this.player.invulnerableUntil > this.elapsed) {
       return;
     }
 
-    this.player.invulnerableUntil = this.elapsed + this.playerConfig.invulnerabilitySeconds;
-    this.lives -= 1;
+    this.lives -= amount;
     if (this.lives <= 0) {
+      this.destroyPlayer();
       this.gameOver();
+      return;
     }
+
+    this.player.invulnerableUntil = this.elapsed + this.playerConfig.invulnerabilitySeconds;
   }
 
   splitLargeAsteroid(asteroid: AsteroidEntity): void {
@@ -769,7 +916,7 @@ class BastardoidsApp {
     const bounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
     for (const asteroid of [...this.asteroids.values()]) {
       if (this.isOutsidePlayerBounds(asteroid.position, bounds)) {
-        this.destroyAsteroid(asteroid);
+        this.destroyAsteroid(asteroid, false);
       }
     }
 
@@ -805,6 +952,7 @@ class BastardoidsApp {
       highScore: this.highScore,
       velocityX: this.player ? this.player.velocity.x : 0,
       velocityZ: this.player ? this.player.velocity.z : 0,
+      performance: this.debugMode ? this.performanceMonitor.getSnapshot() : null,
     });
     this.ui.updateAfterburner({
       charge: this.afterburnerCharge,
@@ -814,10 +962,27 @@ class BastardoidsApp {
     });
   }
 
-  destroyAsteroid(asteroid: AsteroidEntity): void {
+  destroyAsteroid(asteroid: AsteroidEntity, emitExplosion = true): void {
     asteroid.alive = false;
     this.asteroids.delete(asteroid.id);
+    if (emitExplosion) {
+      this.spawnExplosion(
+        asteroid.position,
+        asteroid.radius,
+        asteroid.mesh.material.color.getHex(),
+        asteroid.velocity,
+      );
+    }
     this.scene.remove(asteroid.mesh);
+  }
+
+  destroyEnemy(enemy: EnemyShipEntity, emitExplosion = true): void {
+    enemy.alive = false;
+    this.enemies.delete(enemy.id);
+    if (emitExplosion) {
+      this.spawnExplosion(enemy.position, enemy.radius, enemy.definition.lineColor, enemy.velocity);
+    }
+    this.scene.remove(enemy.mesh);
   }
 
   destroyProjectile(projectile: ProjectileEntity): void {
@@ -830,10 +995,14 @@ class BastardoidsApp {
     for (const asteroid of this.asteroids.values()) {
       this.scene.remove(asteroid.mesh);
     }
+    for (const enemy of this.enemies.values()) {
+      this.scene.remove(enemy.mesh);
+    }
     for (const projectile of this.projectiles.values()) {
       this.scene.remove(projectile.mesh);
     }
     this.asteroids.clear();
+    this.enemies.clear();
     this.projectiles.clear();
 
     if (this.player) {
@@ -843,6 +1012,40 @@ class BastardoidsApp {
     this.playerLines = null;
     this.playerShield = null;
     this.resetThrusterParticles();
+    this.explosionSystem.clear();
+  }
+
+  destroyPlayer(): void {
+    if (!this.player) {
+      return;
+    }
+
+    const player = this.player;
+    player.alive = false;
+    this.spawnExplosion(
+      player.position,
+      player.radius,
+      this.playerLines?.material.color.getHex() ?? 0xffffff,
+      player.velocity,
+    );
+    this.scene.remove(player.mesh);
+    this.player = null;
+    this.playerLines = null;
+    this.playerShield = null;
+  }
+
+  spawnExplosion(
+    position: THREE.Vector3,
+    radius: number,
+    color: THREE.ColorRepresentation,
+    velocity?: THREE.Vector3,
+  ): void {
+    this.explosionSystem.spawn({
+      position: position.clone(),
+      radius,
+      color,
+      velocity: velocity?.clone(),
+    });
   }
 
   getNextSpawnDelay(): number {
@@ -919,7 +1122,7 @@ class BastardoidsApp {
     shieldMaterial.color.setHex(pulse > 0.5 ? 0x69d8ff : 0x8fffb5);
   }
 
-  updateThrusterHoldState(delta: number): void {
+  updatePlayerThrusterHoldState(delta: number): void {
     const buildup = this.thrusterConfig.buildupSeconds;
     for (const key of THRUSTER_NAMES) {
       this.thrusterHoldTime[key] = this.thrusterInputState[key]
@@ -928,7 +1131,18 @@ class BastardoidsApp {
     }
   }
 
-  emitThrusterParticles(name: ThrusterName, delta: number): void {
+  updateEnemyThrusterHoldState(delta: number): void {
+    const buildup = this.thrusterConfig.buildupSeconds;
+    for (const enemy of this.enemies.values()) {
+      for (const key of THRUSTER_NAMES) {
+        enemy.thrusterState.holdTime[key] = enemy.thrusterState.inputState[key]
+          ? Math.min(enemy.thrusterState.holdTime[key] + delta, buildup)
+          : 0;
+      }
+    }
+  }
+
+  emitPlayerThrusterParticles(name: ThrusterName, delta: number): void {
     if (!this.player || !this.thrusterInputState[name]) {
       this.thrusterEmissionCarry[name] = 0;
       return;
@@ -945,15 +1159,54 @@ class BastardoidsApp {
     const emissionCount = Math.floor(this.thrusterEmissionCarry[name]);
     this.thrusterEmissionCarry[name] -= emissionCount;
 
-    const emitter = this.getThrusterEmitter(name);
+    const emitter = this.getThrusterEmitter(this.player, name);
     for (let count = 0; count < emissionCount; count += 1) {
-      this.spawnThrusterParticle(emitter, intensity);
+      this.spawnThrusterParticle(
+        this.player,
+        emitter,
+        intensity,
+        this.getThrusterLengthMultiplier(name),
+      );
+    }
+  }
+
+  emitEnemyThrusterParticles(
+    enemy: EnemyShipEntity,
+    name: ThrusterName,
+    delta: number,
+  ): void {
+    if (!enemy.thrusterState.inputState[name]) {
+      enemy.thrusterState.emissionCarry[name] = 0;
+      return;
+    }
+
+    const intensity = this.getEnemyThrusterIntensity(enemy, name);
+    const emissionRate = THREE.MathUtils.lerp(
+      this.thrusterConfig.minParticlesPerSecond,
+      this.thrusterConfig.maxParticlesPerSecond,
+      intensity,
+    );
+    enemy.thrusterState.emissionCarry[name] += emissionRate * delta;
+    const emissionCount = Math.floor(enemy.thrusterState.emissionCarry[name]);
+    enemy.thrusterState.emissionCarry[name] -= emissionCount;
+
+    const emitter = this.getThrusterEmitter(enemy, name);
+    for (let count = 0; count < emissionCount; count += 1) {
+      this.spawnThrusterParticle(enemy, emitter, intensity, 1);
     }
   }
 
   getThrusterIntensity(name: ThrusterName): number {
     return THREE.MathUtils.clamp(
       this.thrusterHoldTime[name] / this.thrusterConfig.buildupSeconds,
+      0,
+      1,
+    );
+  }
+
+  getEnemyThrusterIntensity(enemy: EnemyShipEntity, name: ThrusterName): number {
+    return THREE.MathUtils.clamp(
+      enemy.thrusterState.holdTime[name] / this.thrusterConfig.buildupSeconds,
       0,
       1,
     );
@@ -995,28 +1248,30 @@ class BastardoidsApp {
     );
   }
 
-  getThrusterEmitter(name: ThrusterName): ThrusterEmitter {
-    const player = this.player;
-    if (!player) {
-      throw new Error("Thruster emitter requested without a player.");
-    }
-
-    const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+  getThrusterEmitter(ship: ShipEntity, name: ThrusterName): ThrusterEmitter {
+    const forward = new THREE.Vector3(Math.sin(ship.yaw), 0, Math.cos(ship.yaw));
     const right = new THREE.Vector3(forward.z, 0, -forward.x);
     const up = new THREE.Vector3(0, 1, 0);
+    const visualScale = ship.type === "player" ? this.playerConfig.visualScale : ship.definition.visualScale;
+    const forwardOffset = this.thrusterConfig.forwardOffset * visualScale;
+    const forwardSideOffset = this.thrusterConfig.forwardSideOffset * visualScale;
+    const reverseOffset = this.thrusterConfig.reverseOffset * visualScale;
+    const reverseSideOffset = this.thrusterConfig.reverseSideOffset * visualScale;
+    const sideOffset = this.thrusterConfig.sideOffset * visualScale;
+    const sideForwardOffset = this.thrusterConfig.sideForwardOffset * visualScale;
 
     if (name === "forward") {
       return {
         position:
           Math.random() < 0.5
-            ? player.position
+            ? ship.position
                 .clone()
-                .add(forward.clone().multiplyScalar(this.thrusterConfig.forwardOffset))
-                .add(right.clone().multiplyScalar(this.thrusterConfig.forwardSideOffset))
-            : player.position
+                .add(forward.clone().multiplyScalar(forwardOffset))
+                .add(right.clone().multiplyScalar(forwardSideOffset))
+            : ship.position
                 .clone()
-                .add(forward.clone().multiplyScalar(this.thrusterConfig.forwardOffset))
-                .add(right.clone().multiplyScalar(-this.thrusterConfig.forwardSideOffset)),
+                .add(forward.clone().multiplyScalar(forwardOffset))
+                .add(right.clone().multiplyScalar(-forwardSideOffset)),
         direction: forward.clone().multiplyScalar(-1),
         tangent: right,
         normal: up,
@@ -1028,14 +1283,14 @@ class BastardoidsApp {
       return {
         position:
           Math.random() < 0.5
-            ? player.position
+            ? ship.position
                 .clone()
-                .add(forward.clone().multiplyScalar(this.thrusterConfig.reverseOffset))
-                .add(right.clone().multiplyScalar(this.thrusterConfig.reverseSideOffset))
-            : player.position
+                .add(forward.clone().multiplyScalar(reverseOffset))
+                .add(right.clone().multiplyScalar(reverseSideOffset))
+            : ship.position
                 .clone()
-                .add(forward.clone().multiplyScalar(this.thrusterConfig.reverseOffset))
-                .add(right.clone().multiplyScalar(-this.thrusterConfig.reverseSideOffset)),
+                .add(forward.clone().multiplyScalar(reverseOffset))
+                .add(right.clone().multiplyScalar(-reverseSideOffset)),
         direction: forward.clone(),
         tangent: right,
         normal: up,
@@ -1045,10 +1300,10 @@ class BastardoidsApp {
 
     if (name === "left") {
       return {
-        position: player.position
+        position: ship.position
           .clone()
-          .add(right.clone().multiplyScalar(-this.thrusterConfig.sideOffset))
-          .add(forward.clone().multiplyScalar(this.thrusterConfig.sideForwardOffset)),
+          .add(right.clone().multiplyScalar(-sideOffset))
+          .add(forward.clone().multiplyScalar(sideForwardOffset)),
         direction: right.clone().multiplyScalar(-1),
         tangent: forward,
         normal: up,
@@ -1057,10 +1312,10 @@ class BastardoidsApp {
     }
 
     return {
-      position: player.position
+      position: ship.position
         .clone()
-        .add(right.clone().multiplyScalar(this.thrusterConfig.sideOffset))
-        .add(forward.clone().multiplyScalar(this.thrusterConfig.sideForwardOffset)),
+        .add(right.clone().multiplyScalar(sideOffset))
+        .add(forward.clone().multiplyScalar(sideForwardOffset)),
       direction: right.clone(),
       tangent: forward,
       normal: up,
@@ -1068,18 +1323,17 @@ class BastardoidsApp {
     };
   }
 
-  spawnThrusterParticle(emitter: ThrusterEmitter, intensity: number): void {
-    const player = this.player;
-    if (!player) {
-      return;
-    }
-
+  spawnThrusterParticle(
+    ship: ShipEntity,
+    emitter: ThrusterEmitter,
+    intensity: number,
+    lengthMultiplier: number,
+  ): void {
     const particle = this.thrusterParticlePool.find((candidate) => !candidate.active);
     if (!particle) {
       return;
     }
 
-    const lengthMultiplier = this.getThrusterLengthMultiplier(emitter.name);
     const lifetime = THREE.MathUtils.lerp(
       this.thrusterConfig.minLifetimeSeconds,
       this.thrusterConfig.maxLifetimeSeconds,
@@ -1109,10 +1363,17 @@ class BastardoidsApp {
       .addScaledVector(emitter.tangent, tangentOffset)
       .addScaledVector(emitter.normal, normalOffset);
     particle.velocity
-      .copy(player.velocity)
+      .copy(ship.velocity)
       .addScaledVector(emitter.direction, speed * (0.85 + Math.random() * 0.3))
       .addScaledVector(emitter.tangent, lateralVelocity)
       .addScaledVector(emitter.normal, verticalVelocity);
+  }
+
+  syncEnemyThrusterState(enemy: EnemyShipEntity, intent: ShipControlIntent): void {
+    enemy.thrusterState.inputState.forward = intent.forwardThrottle > 0.1;
+    enemy.thrusterState.inputState.reverse = intent.reverseThrottle > 0.1;
+    enemy.thrusterState.inputState.left = intent.strafe > 0.1;
+    enemy.thrusterState.inputState.right = intent.strafe < -0.1;
   }
 
   syncThrusterParticleGeometry(): void {
@@ -1165,30 +1426,6 @@ class BastardoidsApp {
     this.syncThrusterParticleGeometry();
   }
 
-  applyAxisThrust(axis: THREE.Vector3, deltaSpeed: number, maxAxisSpeed: number): void {
-    if (!this.player || deltaSpeed === 0) {
-      return;
-    }
-
-    const axisSpeed = this.player.velocity.dot(axis);
-    const thrustSign = Math.sign(deltaSpeed);
-    const axisSign = Math.sign(axisSpeed);
-
-    // Keep existing inertial drift intact; only cap additional thrust
-    // when the player is accelerating further along the same local axis.
-    if (axisSign !== 0 && axisSign === thrustSign && Math.abs(axisSpeed) >= maxAxisSpeed) {
-      return;
-    }
-
-    let appliedDelta = deltaSpeed;
-    if (axisSign === thrustSign || axisSign === 0) {
-      const remainingSpeed = maxAxisSpeed - Math.abs(axisSpeed);
-      appliedDelta = thrustSign * Math.min(Math.abs(deltaSpeed), Math.max(remainingSpeed, 0));
-    }
-
-    this.player.velocity.addScaledVector(axis, appliedDelta);
-  }
-
   getReferenceGridBounds(): ReferenceGridBounds {
     return this.cameraRig.getViewBounds();
   }
@@ -1209,17 +1446,6 @@ class BastardoidsApp {
     const deltaX = Math.abs(position.x - this.player.position.x);
     const deltaZ = Math.abs(position.z - this.player.position.z);
     return deltaX > bounds.halfWidth || deltaZ > bounds.halfDepth;
-  }
-
-  wrapAngle(angle: number): number {
-    let wrapped = angle;
-    while (wrapped > Math.PI) {
-      wrapped -= Math.PI * 2;
-    }
-    while (wrapped < -Math.PI) {
-      wrapped += Math.PI * 2;
-    }
-    return wrapped;
   }
 }
 
