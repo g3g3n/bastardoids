@@ -1,0 +1,25 @@
+- razmisli kako reverse thruster max speed utječe na dinamiku borbe
+- brodovi nemaju svoje statistike, već su statistike vezane za playera i neprijatelje. Kreiraj brodove kao klasu ili type i dodjeli im statistike koje će služiti kao base. Player ć
+- main.ts -> prestani definirati muzzleOffsetForward nego ga povuci iz nove ships klase
+          -> prestani definirati playbackRateMin nego ga dodjeli svakom oružju i povuci od tamo
+
+let's implement something cool. We will introduce a new "heat" mechanic. It should have it's own gauge, similar to afterburner, but it starts empty.
+Gauge should be positioned in the upper left of the screen, below the element that holds current lives, speed, etc. Non-player ships (eg. hunter) also have their own heat gauge which is not displayed anywhere. but game should keep track of it.
+Gauge should go from 0 to 150, and should have markings at 100 and 150. Gauge meter fills as weapons are used by player and progressively goes from green to yellow to orange and at 100 to 150 gauge meter will turn red.
+Each ship should have a new variable/property
+
+SHIELD / HULL
+Let's do away with player's "lives", health and the 2 second invulnerability after losing a life systems and replace them with a ship based hull + shield system.
+For now, since we only have 1 ship (hunter), just do a name switch of his health to "hull", and same for asteroids; however multiply all current health values by 10 when converting to hull. So an asteroid with 2 health should have 20 hull. Make sure to change all references as well.
+Change damage across all weapons by multiplying existing values by 10.
+
+Player's lives can be renamed into "hull" and set to 40. Add a "shield" and "shieldRegen" properties to player in gameConfig.json. Set "shield" to 40 and "shieldRegen" to 20.
+From now on, change all weapon hit interactions to check for shield before reducing hull. If an entity hit by a weapon or an asteroid has "shield" remaining at the time when it gets hit, shield should get reduced before hull damage takes place. If a hit would do more damage than the current shield reserves can prevent, the remaining damage should carry over to the hull. Since asteroids (and hunter currently) have no shields, make sure on-hit calculations work as if the shield was 0 in that case.
+Change the current behavior of colliding with an asteroid from player losing 1 life to have asteroids do 20 damage and 30 damage for small and large asteroid, respectivelly. Asteroid collisions should do damage to both player and enemy ships.
+
+All entities are destroyed when their hull reaches 0 (or less). Treat "shieldRegen" as a percentage of total shield recovered per second. This means shieldRegen = 20 will recover 20% of whatever the total "shield" value of the entity is. "shieldRegen" becomes inactive for 2.5 seconds after taking a hit. For now put that value in gameConfig.json so I can easily test; later we will move it elsewhere.
+
+Lastly, we will need a visual representation of shield and hull on player's HUD. Remove current "lives" counter from the top left bar.
+I've included an image of a central HUD element from EVE Online as guidance. If possible create something similar at the horizontal midpoint at the bottom of the screen. It does not have to be fancy or detailed. Try to imagine the central (orange on image - used for capacitor in EVE) part as the ship's hull, displayed in red. As the ship's hull goes down, the red indicator should go from full to empty (it can work similar to health orb in Diablo games). The upper half on the image (the three white rounded stripes/rows; represent armor in EVE) should be blue and represent player's shield status. To reduce complexity you can make it into one blue rounded bar which depletes from right to left. The bottom, darker part on the image, with the blue speed indicator (it says 1330 m/s on the image) can remain just a dark gray placeholder. If we get the shied & hull indicators right, we will implement speed indicator here later.
+
+Let me know if there are any uncertanties.

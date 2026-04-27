@@ -7,13 +7,18 @@ const DEFAULT_MENU_COPY =
 
 export interface HudSnapshot {
   score: number;
-  lives: number;
   running: boolean;
-  invulnerable: boolean;
   highScore: number;
   velocityX: number;
   velocityZ: number;
   performance: PerformanceSnapshot | null;
+}
+
+export interface ShipStatusSnapshot {
+  hull: number;
+  maxHull: number;
+  shield: number;
+  maxShield: number;
 }
 
 export interface AfterburnerSnapshot {
@@ -23,9 +28,22 @@ export interface AfterburnerSnapshot {
   cooling: boolean;
 }
 
+export interface HeatSnapshot {
+  current: number;
+  max: number;
+}
+
 export class GameUi {
   root: HTMLDivElement;
   hud: HTMLDivElement;
+  heatGauge: HTMLDivElement;
+  heatFill: HTMLDivElement;
+  heatLabel: HTMLSpanElement;
+  shipStatus: HTMLDivElement;
+  shipShieldFill: HTMLDivElement;
+  shipShieldLabel: HTMLSpanElement;
+  shipHullFill: HTMLDivElement;
+  shipHullLabel: HTMLSpanElement;
   crosshair: HTMLDivElement;
   afterburnerGauge: HTMLDivElement;
   afterburnerFill: HTMLDivElement;
@@ -44,6 +62,33 @@ export class GameUi {
     this.hud = document.createElement("div");
     this.hud.className = "hud-bar";
     this.root.append(this.hud);
+
+    this.heatGauge = document.createElement("div");
+    this.heatGauge.className = "heat-gauge";
+    this.heatGauge.innerHTML = `
+      <div class="heat-label-row">
+        <span class="heat-name">Heat</span>
+        <span class="heat-value">0 / 150</span>
+      </div>
+      <div class="heat-track">
+        <div class="heat-fill"></div>
+        <div class="heat-marker heat-marker-100">
+          <span>100</span>
+        </div>
+        <div class="heat-marker heat-marker-150">
+          <span>150</span>
+        </div>
+      </div>
+    `;
+    this.heatFill = requireElement(
+      this.heatGauge.querySelector<HTMLDivElement>(".heat-fill"),
+      "Heat fill element not found.",
+    );
+    this.heatLabel = requireElement(
+      this.heatGauge.querySelector<HTMLSpanElement>(".heat-value"),
+      "Heat value element not found.",
+    );
+    this.root.append(this.heatGauge);
 
     this.afterburnerGauge = document.createElement("div");
     this.afterburnerGauge.className = "afterburner-gauge";
@@ -65,6 +110,41 @@ export class GameUi {
       "Afterburner value element not found.",
     );
     this.root.append(this.afterburnerGauge);
+
+    this.shipStatus = document.createElement("div");
+    this.shipStatus.className = "ship-status";
+    this.shipStatus.innerHTML = `
+      <div class="ship-status-shield-track">
+        <div class="ship-status-shield-fill"></div>
+        <span class="ship-status-shield-label">Shield 0 / 0</span>
+      </div>
+      <div class="ship-status-core">
+        <div class="ship-status-hull-shell">
+          <div class="ship-status-hull-fill"></div>
+          <div class="ship-status-hull-gloss"></div>
+          <div class="ship-status-hull-ring"></div>
+          <span class="ship-status-hull-label">Hull 0 / 0</span>
+        </div>
+      </div>
+      <div class="ship-status-base"></div>
+    `;
+    this.shipShieldFill = requireElement(
+      this.shipStatus.querySelector<HTMLDivElement>(".ship-status-shield-fill"),
+      "Ship shield fill element not found.",
+    );
+    this.shipShieldLabel = requireElement(
+      this.shipStatus.querySelector<HTMLSpanElement>(".ship-status-shield-label"),
+      "Ship shield label element not found.",
+    );
+    this.shipHullFill = requireElement(
+      this.shipStatus.querySelector<HTMLDivElement>(".ship-status-hull-fill"),
+      "Ship hull fill element not found.",
+    );
+    this.shipHullLabel = requireElement(
+      this.shipStatus.querySelector<HTMLSpanElement>(".ship-status-hull-label"),
+      "Ship hull label element not found.",
+    );
+    this.root.append(this.shipStatus);
 
     this.crosshair = document.createElement("div");
     this.crosshair.className = "crosshair";
@@ -134,12 +214,13 @@ export class GameUi {
     this.menu.hidden = true;
   }
 
+  setGameplayCursorHidden(hidden: boolean): void {
+    this.root.classList.toggle("gameplay-cursor-hidden", hidden);
+  }
+
   updateHud(snapshot: HudSnapshot): void {
-    const state = snapshot.running
-      ? snapshot.invulnerable
-        ? "Shielded"
-        : "Live"
-      : "Menu";
+    const state = snapshot.running ? "Flight" : "Menu";
+    this.shipStatus.hidden = !snapshot.running;
 
     const performanceStats = snapshot.performance
       ? `
@@ -151,13 +232,26 @@ export class GameUi {
 
     this.hud.innerHTML = `
       <span>Score ${snapshot.score}</span>
-      <span>Lives ${snapshot.lives}</span>
-      <span>State ${state}</span>
+      <span>Status ${state}</span>
       <span>High ${snapshot.highScore}</span>
       <span>X vel ${snapshot.velocityX.toFixed(1)}</span>
       <span>Z vel ${snapshot.velocityZ.toFixed(1)}</span>
       ${performanceStats}
     `;
+  }
+
+  updateShipStatus(snapshot: ShipStatusSnapshot): void {
+    const hullPercent = snapshot.maxHull > 0 ? Math.max(0, Math.min(snapshot.hull / snapshot.maxHull, 1)) : 0;
+    const shieldPercent =
+      snapshot.maxShield > 0 ? Math.max(0, Math.min(snapshot.shield / snapshot.maxShield, 1)) : 0;
+
+    this.shipHullFill.style.height = `${hullPercent * 100}%`;
+    this.shipHullFill.style.background = this.getHullColor(hullPercent);
+    this.shipHullLabel.textContent = `Hull ${Math.max(0, Math.round(snapshot.hull))} / ${Math.round(snapshot.maxHull)}`;
+
+    this.shipShieldFill.style.transform = `scaleX(${shieldPercent})`;
+    this.shipShieldLabel.textContent = `Shield ${Math.max(0, Math.round(snapshot.shield))} / ${Math.round(snapshot.maxShield)}`;
+    this.shipStatus.classList.toggle("shield-empty", snapshot.maxShield <= 0 || shieldPercent <= 0.001);
   }
 
   updateAfterburner(snapshot: AfterburnerSnapshot): void {
@@ -168,6 +262,14 @@ export class GameUi {
     this.afterburnerGauge.classList.toggle("cooling", snapshot.cooling);
   }
 
+  updateHeat(snapshot: HeatSnapshot): void {
+    const clampedCurrent = Math.max(0, Math.min(snapshot.current, snapshot.max));
+    const percent = snapshot.max > 0 ? (clampedCurrent / snapshot.max) * 100 : 0;
+    this.heatFill.style.width = `${percent}%`;
+    this.heatFill.style.background = this.getHeatColor(clampedCurrent, snapshot.max);
+    this.heatLabel.textContent = `${Math.round(clampedCurrent)} / ${snapshot.max}`;
+  }
+
   setCrosshairClientPosition(x: number, y: number): void {
     this.crosshair.style.left = `${x}px`;
     this.crosshair.style.top = `${y}px`;
@@ -176,5 +278,30 @@ export class GameUi {
   updateCrosshairPosition(pointerNdc: THREE.Vector2, viewport: THREE.Vector2): void {
     this.crosshair.style.left = `${((pointerNdc.x + 1) * viewport.x) / 2}px`;
     this.crosshair.style.top = `${((1 - pointerNdc.y) * viewport.y) / 2}px`;
+  }
+
+  private getHeatColor(current: number, max: number): string {
+    if (max <= 0) {
+      return "#3dff79";
+    }
+
+    if (current <= 100) {
+      const normalized = Math.max(0, Math.min(current / 100, 1));
+      const hue = 120 - normalized * 90;
+      return `hsl(${hue.toFixed(0)} 95% 58%)`;
+    }
+
+    return "#ff4a36";
+  }
+
+  private getHullColor(percent: number): string {
+    if (percent > 0.66) {
+      return "linear-gradient(180deg, #ff8870, #ff4f39 55%, #d31812)";
+    }
+    if (percent > 0.33) {
+      return "linear-gradient(180deg, #ffb062, #ff6938 55%, #cf2714)";
+    }
+
+    return "linear-gradient(180deg, #ffcf7b, #ff5c31 45%, #b30b0b)";
   }
 }

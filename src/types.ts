@@ -16,6 +16,13 @@ export type ThrusterName = "forward" | "reverse" | "left" | "right";
 export type ShipModelName = "ship1" | "ship2" | "ship3" | "ship4";
 export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
 export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
+export type SoundEffectName =
+  | "afterburnerLoop"
+  | "explosion1"
+  | "laserHit"
+  | "laserShot1"
+  | "plasmaOrbShot1"
+  | "thrustersLongLoop";
 export type Faction = "player" | "enemy";
 export type EnemyShipName = "hunter";
 export type EnemyTactic =
@@ -37,6 +44,9 @@ export interface ShipModelDefinition {
 
 export interface WorldConfig {
   asteroidDistanceScreens: number;
+  asteroidDespawnDistanceScreens: number;
+  asteroidWrapHeadingJitterDegrees: number;
+  asteroidWrapPositionJitterFraction: number;
   cameraFovDegrees: number;
   cameraNear: number;
   cameraFar: number;
@@ -58,6 +68,7 @@ export interface WorldConfig {
 export interface ShipMovementConfig {
   mass: number;
   radius: number;
+  vent: number;
   thrust: number;
   reverseThrust: number;
   strafeThrust: number;
@@ -73,13 +84,22 @@ export interface ShipMovementConfig {
 }
 
 export interface PlayerConfig extends ShipMovementConfig {
-  lives: number;
-  invulnerabilitySeconds: number;
+  hull: number;
+  shield: number;
+  shieldRegen: number;
+  shieldRegenDelaySeconds: number;
 }
 
 export interface WeaponDefinition {
   name: WeaponName;
   visual: WeaponVisualName;
+  fireSound?: SoundEffectName;
+  hitSound?: SoundEffectName;
+  hitVolumeAgainstAsteroid?: number;
+  hitVolumeAgainstShip?: number;
+  hitSoundOffsetSeconds?: number;
+  hitSoundPlaybackRate?: number;
+  heat: number;
   shotsPerSecond: number;
   speed: number;
   lifetimeSeconds: number;
@@ -134,7 +154,7 @@ export interface AfterburnerConfig {
 export interface AsteroidDefinition {
   mass: number;
   radius: number;
-  maxHealth: number;
+  maxHull: number;
   minSpeed: number;
   maxSpeed: number;
   rotationSpeedMin: number;
@@ -167,6 +187,15 @@ export interface ShipStateBase {
   id: number;
   mass: number;
   radius: number;
+  vent: number;
+  heat: number;
+  maxHull: number;
+  hull: number;
+  maxShield: number;
+  shield: number;
+  shieldRegen: number;
+  shieldRegenDelaySeconds: number;
+  shieldRegenCooldownUntil: number;
   faction: Faction;
   mesh: Group;
   position: Vector3;
@@ -179,12 +208,14 @@ export interface ShipStateBase {
 export interface PlayerState extends ShipStateBase {
   type: "player";
   faction: "player";
-  invulnerableUntil: number;
 }
 
 export interface EnemyShipDefinition extends ShipMovementConfig {
   name: EnemyShipName;
-  maxHealth: number;
+  maxHull: number;
+  shield: number;
+  shieldRegen: number;
+  shieldRegenDelaySeconds: number;
   engageRadius: number;
   fireRadius: number;
   preferredRangeMin: number;
@@ -244,8 +275,6 @@ export interface EnemyShipEntity extends ShipStateBase {
   type: "enemyShip";
   faction: "enemy";
   name: EnemyShipName;
-  maxHealth: number;
-  health: number;
   definition: EnemyShipDefinition;
   blackboard: EnemyBlackboard;
   thrusterState: ShipThrusterRuntime;
@@ -256,12 +285,17 @@ export interface AsteroidEntity {
   type: "asteroid";
   mass: number;
   radius: number;
+  maxHull: number;
+  hull: number;
+  maxShield: number;
+  shield: number;
+  shieldRegen: number;
+  shieldRegenDelaySeconds: number;
+  shieldRegenCooldownUntil: number;
   mesh: LineSegments<BufferGeometry, LineBasicMaterial>;
   position: Vector3;
   velocity: Vector3;
   size: AsteroidSize;
-  maxHealth: number;
-  health: number;
   rotationAxis: Vector3;
   rotationSpeed: number;
   alive: boolean;
@@ -305,6 +339,7 @@ export interface ReferenceGridBounds {
 }
 
 export type CollisionBody = PlayerState | EnemyShipEntity | AsteroidEntity;
+export type DamageableEntity = CollisionBody;
 export type ShipEntity = PlayerState | EnemyShipEntity;
 export type ThrusterStateMap<T> = Record<ThrusterName, T>;
 export type BackgroundStarTile = Points<BufferGeometry, PointsMaterial>;

@@ -4,6 +4,7 @@ import type { ShipControlIntent, ShipEntity, ShipMovementConfig } from "../../ty
 export interface ShipControlOptions {
   maxSpeedOverride?: number;
   forwardThrustMultiplier?: number;
+  preserveOverspeed?: boolean;
 }
 
 export interface ShipBasis {
@@ -29,6 +30,7 @@ export function applyShipControl(
   const { forward, right } = getShipBasis(ship.yaw);
   const activeSpeedCap = options.maxSpeedOverride ?? config.maxSpeed;
   const forwardThrustMultiplier = options.forwardThrustMultiplier ?? 1;
+  const startingSpeed = ship.velocity.length();
 
   if (intent.forwardThrottle > 0) {
     ship.velocity.addScaledVector(
@@ -57,8 +59,11 @@ export function applyShipControl(
   }
 
   const speed = ship.velocity.length();
-  if (speed > activeSpeedCap) {
-    ship.velocity.setLength(activeSpeedCap);
+  const allowedSpeed = options.preserveOverspeed
+    ? Math.max(activeSpeedCap, startingSpeed)
+    : activeSpeedCap;
+  if (speed > allowedSpeed) {
+    ship.velocity.setLength(allowedSpeed);
   }
 
   if (intent.targetYaw !== null) {

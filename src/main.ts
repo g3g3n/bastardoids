@@ -3,6 +3,7 @@ import type {
   AsteroidEntity,
   AsteroidSize,
   CollisionBody,
+  DamageableEntity,
   EnemyShipEntity,
   PlayerLines,
   ProjectileEntity,
@@ -17,6 +18,7 @@ import type {
   ThrusterStateMap,
 } from "./types";
 import { updateEnemyAi } from "./ai/enemyShipAi";
+import { AudioSystem } from "./audio/AudioSystem";
 import { CameraRig } from "./camera/CameraRig";
 import { loadGameConfig } from "./config";
 import { getAsteroidDefinition } from "./entities/asteroids/asteroidDefinitions";
@@ -36,6 +38,20 @@ import { WorldScenery } from "./visuals/WorldScenery";
 const config = loadGameConfig();
 const STORAGE_KEY = "bastardoids-highscore";
 const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
+const HEAT_SOFT_CAP = 100;
+const HEAT_MAX = 150;
+const OVERHEATED_VENT_MULTIPLIER = 0.65;
+const SMALL_ASTEROID_COLLISION_DAMAGE = 20;
+const LARGE_ASTEROID_COLLISION_DAMAGE = 30;
+const PLAYER_THRUSTER_LOOP_ID = "player-thrusters";
+const PLAYER_AFTERBURNER_LOOP_ID = "player-afterburner";
+const ENEMY_THRUSTER_LOOP_ID_PREFIX = "enemy-thrusters-";
+const ENEMY_THRUSTER_AUDIO_RANGE_X = 250;
+const ENEMY_THRUSTER_AUDIO_RANGE_Z = 150;
+const PLAYER_THRUSTER_AUDIO_VOLUME = 0.85;
+const PLAYER_AFTERBURNER_AUDIO_VOLUME = 0.8;
+const ENEMY_THRUSTER_AUDIO_VOLUME = 0.55;
+const ENEMY_THRUSTER_AUDIO_PITCH = 1.35;
 
 class BastardoidsApp {
   scene = new THREE.Scene();
@@ -51,7 +67,9 @@ class BastardoidsApp {
   cameraTarget = this.cameraRig.target;
   cameraVelocity = this.cameraRig.velocity;
   pointerWorld = new THREE.Vector3();
+  audioSystem = new AudioSystem();
   keys = new Set<string>();
+  primaryMouseDown = false;
   asteroids = new Map<number, AsteroidEntity>();
   enemies = new Map<number, EnemyShipEntity>();
   projectiles = new Map<number, ProjectileEntity>();
@@ -97,7 +115,6 @@ class BastardoidsApp {
   nextId = 1;
   score = 0;
   highScore = this.loadHighScore();
-  lives = this.playerConfig.lives;
   lastShotAt = -Infinity;
   spawnCooldown = 0;
   elapsed = 0;
@@ -124,6 +141,7 @@ class BastardoidsApp {
     this.bindEvents();
     this.updateHud();
     this.updateMenu("Start");
+    this.ui.setGameplayCursorHidden(false);
     this.onResize();
     this.animate();
   }
@@ -189,6 +207,8 @@ class BastardoidsApp {
     window.addEventListener("keyup", this.onKeyUp);
     window.addEventListener("mousemove", this.onMouseMove);
     window.addEventListener("mousedown", this.onMouseDown);
+    window.addEventListener("mouseup", this.onMouseUp);
+    window.addEventListener("blur", this.onWindowBlur);
     this.ui.onStart(() => this.startGame());
     this.ui.onQuit(() => this.quitToMenu());
   }
@@ -204,6 +224,7 @@ class BastardoidsApp {
   };
 
   onKeyDown = (event: KeyboardEvent): void => {
+    this.audioSystem.unlock();
     this.keys.add(event.key.toLowerCase());
 
     if (event.code === "Space") {
@@ -227,16 +248,33 @@ class BastardoidsApp {
     this.updatePointerWorld();
   };
 
-  onMouseDown = (): void => {
+  onMouseDown = (event: MouseEvent): void => {
+    this.audioSystem.unlock();
+    if (event.button !== 0) {
+      return;
+    }
+
+    this.primaryMouseDown = true;
     if (this.running) {
       this.tryFirePrimaryWeapon();
     }
   };
 
+  onMouseUp = (event: MouseEvent): void => {
+    if (event.button === 0) {
+      this.primaryMouseDown = false;
+    }
+  };
+
+  onWindowBlur = (): void => {
+    this.primaryMouseDown = false;
+    this.stopLoopedMovementAudio();
+  };
+
   startGame(): void {
+    this.audioSystem.unlock();
     this.running = true;
     this.score = 0;
-    this.lives = this.playerConfig.lives;
     this.elapsed = 0;
     this.lastShotAt = -Infinity;
     this.spawnCooldown = 0;
@@ -250,17 +288,22 @@ class BastardoidsApp {
     this.createHunter();
     this.updateHud();
     this.ui.hideMenu();
+    this.ui.setGameplayCursorHidden(true);
     this.clock.start();
   }
 
   quitToMenu(): void {
     this.running = false;
+    this.stopLoopedMovementAudio();
     this.clearEntities();
+    this.ui.setGameplayCursorHidden(false);
     this.updateMenu("Start");
   }
 
   gameOver(): void {
     this.running = false;
+    this.stopLoopedMovementAudio();
+    this.ui.setGameplayCursorHidden(false);
     if (this.score > this.highScore) {
       this.highScore = this.score;
       localStorage.setItem(STORAGE_KEY, String(this.highScore));
@@ -317,8 +360,13 @@ class BastardoidsApp {
       size,
       mass: asteroidCfg.mass,
       radius: asteroidCfg.radius,
-      maxHealth: asteroidCfg.maxHealth,
-      health: asteroidCfg.maxHealth,
+      maxHull: asteroidCfg.maxHull,
+      hull: asteroidCfg.maxHull,
+      maxShield: 0,
+      shield: 0,
+      shieldRegen: 0,
+      shieldRegenDelaySeconds: 0,
+      shieldRegenCooldownUntil: 0,
       mesh,
       position: position.clone(),
       velocity: velocity.clone(),
@@ -404,8 +452,9 @@ class BastardoidsApp {
       return;
     }
 
-    this.lastShotAt = this.elapsed;
-    this.fireShipPrimaryWeapon(this.player, this.playerConfig);
+    if (this.fireShipPrimaryWeapon(this.player, this.playerConfig)) {
+      this.lastShotAt = this.elapsed;
+    }
   }
 
   fireShipPrimaryWeapon(
@@ -415,8 +464,21 @@ class BastardoidsApp {
       muzzleOffsetForward: number;
       muzzleOffsetSide: number;
     },
-  ): void {
+  ): boolean {
     const weaponDefinition = getWeaponDefinition(shipConfig.primaryWeapon);
+    if (!this.canShipFireWeapon(ship, weaponDefinition)) {
+      return false;
+    }
+
+    ship.heat = Math.min(HEAT_MAX, ship.heat + weaponDefinition.heat);
+    if (weaponDefinition.fireSound) {
+      this.audioSystem.playSfx(weaponDefinition.fireSound, {
+        volume: ship.faction === "enemy" ? 0.4 : 0.65,
+        playbackRateMin: 0.92,
+        playbackRateMax: 1.06,
+      });
+    }
+
     const { forward, right } = getShipBasis(ship.yaw);
     const baseVelocity = ship.velocity
       .clone()
@@ -431,7 +493,7 @@ class BastardoidsApp {
         ship.position.clone().add(muzzleForward),
         baseVelocity,
       );
-      return;
+      return true;
     }
 
     const sideOffset = right.clone().multiplyScalar(shipConfig.muzzleOffsetSide);
@@ -450,6 +512,7 @@ class BastardoidsApp {
       ship.position.clone().add(muzzleForward).sub(sideOffset),
       baseVelocity.clone(),
     );
+    return true;
   }
 
   animate = (): void => {
@@ -469,6 +532,8 @@ class BastardoidsApp {
   step(delta: number): void {
     this.handleInput(delta);
     this.updateEnemyShips(delta);
+    this.updateShipHeat(delta);
+    this.updateShieldRegeneration(delta);
     this.updateAfterburner(delta);
     this.spawnCooldown -= delta;
     if (this.spawnCooldown <= 0) {
@@ -486,16 +551,10 @@ class BastardoidsApp {
     this.cleanupFarObjects();
     this.updateCamera(delta, false);
     this.updateHud();
+    this.updateLoopedMovementAudio();
 
     if (this.playerLines && this.player) {
-      const shipMaterial = this.playerLines.material;
-      if (this.player.invulnerableUntil > this.elapsed) {
-        shipMaterial.color.setHex(
-          Math.floor((Math.sin(this.elapsed * 24) * 0.5 + 0.5) * 0x55) + 0xaaffaa,
-        );
-      } else {
-        shipMaterial.color.setHex(0xffffff);
-      }
+      this.playerLines.material.color.setHex(0xffffff);
     }
 
     this.updateShieldEffect();
@@ -550,6 +609,10 @@ class BastardoidsApp {
       maxSpeedOverride: activeSpeedCap,
       forwardThrustMultiplier: afterburnerEngaged ? this.afterburnerConfig.thrustMultiplier : 1,
     });
+
+    if (this.primaryMouseDown) {
+      this.tryFirePrimaryWeapon();
+    }
   }
 
   integratePlayer(delta: number): void {
@@ -580,12 +643,16 @@ class BastardoidsApp {
         delta,
       });
       this.syncEnemyThrusterState(enemy, intent);
-      applyShipControl(enemy, enemy.definition, intent, delta);
+      applyShipControl(enemy, enemy.definition, intent, delta, {
+        preserveOverspeed: true,
+      });
 
       if (intent.firePrimary) {
-        this.fireShipPrimaryWeapon(enemy, enemy.definition);
-        const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
-        enemy.blackboard.nextFireAt = this.elapsed + 1 / weaponDefinition.shotsPerSecond;
+        const fired = this.fireShipPrimaryWeapon(enemy, enemy.definition);
+        if (fired) {
+          const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
+          enemy.blackboard.nextFireAt = this.elapsed + 1 / weaponDefinition.shotsPerSecond;
+        }
       }
     }
   }
@@ -671,33 +738,32 @@ class BastardoidsApp {
         continue;
       }
 
+      this.playProjectileHitSfx(projectile, target);
       this.applyProjectileImpact(projectile, target);
       this.destroyProjectile(projectile);
-
-      if (target.type === "asteroid") {
-        target.health -= projectile.damage;
-        if (target.health <= 0) {
-          if (target.size === "small") {
-            this.destroyAsteroid(target);
-            this.score += 1;
-          } else {
-            this.splitLargeAsteroid(target);
-          }
-        }
-        continue;
-      }
-
-      if (target.type === "enemyShip") {
-        target.health -= projectile.damage;
-        if (target.health <= 0) {
-          this.destroyEnemy(target);
-          this.score += target.definition.scoreValue;
-        }
-        continue;
-      }
-
-      this.handlePlayerDamage(projectile.damage);
+      this.applyDamageToEntity(target, projectile.damage);
     }
+  }
+
+  playProjectileHitSfx(
+    projectile: ProjectileEntity,
+    target: AsteroidEntity | EnemyShipEntity | PlayerState,
+  ): void {
+    const weaponDefinition = getWeaponDefinition(projectile.weapon);
+    if (!weaponDefinition.hitSound) {
+      return;
+    }
+
+    const hitVolume =
+      target.type === "asteroid"
+        ? weaponDefinition.hitVolumeAgainstAsteroid
+        : weaponDefinition.hitVolumeAgainstShip;
+    this.audioSystem.playSfx(weaponDefinition.hitSound, {
+      volume: hitVolume ?? 1,
+      offsetSeconds: weaponDefinition.hitSoundOffsetSeconds,
+      playbackRateMin: weaponDefinition.hitSoundPlaybackRate,
+      playbackRateMax: weaponDefinition.hitSoundPlaybackRate,
+    });
   }
 
   findProjectileHitTarget(
@@ -770,6 +836,74 @@ class BastardoidsApp {
     }
   }
 
+  applyAsteroidCollisionDamage(first: CollisionBody, second: CollisionBody): void {
+    if (first.type === "asteroid" && second.type !== "asteroid") {
+      this.applyShipCollisionDamageFromAsteroid(second, first);
+      return;
+    }
+
+    if (second.type === "asteroid" && first.type !== "asteroid") {
+      this.applyShipCollisionDamageFromAsteroid(first, second);
+    }
+  }
+
+  applyShipCollisionDamageFromAsteroid(
+    ship: CollisionBody,
+    asteroid: AsteroidEntity,
+  ): void {
+    if (ship.type !== "player" && ship.type !== "enemyShip") {
+      return;
+    }
+
+    const damage =
+      asteroid.size === "small"
+        ? SMALL_ASTEROID_COLLISION_DAMAGE
+        : LARGE_ASTEROID_COLLISION_DAMAGE;
+    this.applyDamageToEntity(ship, damage);
+  }
+
+  applyDamageToEntity(entity: DamageableEntity, damage: number): void {
+    if (!entity.alive || damage <= 0) {
+      return;
+    }
+
+    entity.shieldRegenCooldownUntil = this.elapsed + entity.shieldRegenDelaySeconds;
+
+    let remainingDamage = damage;
+    if (entity.shield > 0) {
+      const absorbed = Math.min(entity.shield, remainingDamage);
+      entity.shield -= absorbed;
+      remainingDamage -= absorbed;
+    }
+
+    if (remainingDamage > 0) {
+      entity.hull -= remainingDamage;
+    }
+
+    if (entity.hull > 0) {
+      return;
+    }
+
+    if (entity.type === "asteroid") {
+      if (entity.size === "small") {
+        this.destroyAsteroid(entity);
+        this.score += 1;
+      } else {
+        this.splitLargeAsteroid(entity);
+      }
+      return;
+    }
+
+    if (entity.type === "enemyShip") {
+      this.destroyEnemy(entity);
+      this.score += entity.definition.scoreValue;
+      return;
+    }
+
+    this.destroyPlayer();
+    this.gameOver();
+  }
+
   handleObjectCollisions(): void {
     const dynamicObjects: CollisionBody[] = [
       ...this.asteroids.values(),
@@ -796,8 +930,9 @@ class BastardoidsApp {
         const normal = delta.multiplyScalar(1 / distance);
         const relativeVelocity = second.velocity.clone().sub(first.velocity);
         const separatingSpeed = relativeVelocity.dot(normal);
+        const impactCollision = separatingSpeed < 0;
 
-        if (separatingSpeed < 0) {
+        if (impactCollision) {
           const impulseMagnitude =
             (-(1 + this.physicsConfig.restitution) * separatingSpeed) /
             (1 / first.mass + 1 / second.mass);
@@ -815,29 +950,13 @@ class BastardoidsApp {
         first.mesh.position.copy(first.position);
         second.mesh.position.copy(second.position);
 
-        const playerHit =
-          (first.type === "player" && (second.type === "asteroid" || second.type === "enemyShip")) ||
-          (second.type === "player" && (first.type === "asteroid" || first.type === "enemyShip"));
-        if (playerHit) {
-          this.handlePlayerDamage(1);
+        if (!impactCollision) {
+          continue;
         }
+
+        this.applyAsteroidCollisionDamage(first, second);
       }
     }
-  }
-
-  handlePlayerDamage(amount: number): void {
-    if (!this.player || this.player.invulnerableUntil > this.elapsed) {
-      return;
-    }
-
-    this.lives -= amount;
-    if (this.lives <= 0) {
-      this.destroyPlayer();
-      this.gameOver();
-      return;
-    }
-
-    this.player.invulnerableUntil = this.elapsed + this.playerConfig.invulnerabilitySeconds;
   }
 
   splitLargeAsteroid(asteroid: AsteroidEntity): void {
@@ -913,15 +1032,16 @@ class BastardoidsApp {
       return;
     }
 
-    const bounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
+    const asteroidBounds = this.getPlayerBounds(this.world.asteroidDespawnDistanceScreens);
     for (const asteroid of [...this.asteroids.values()]) {
-      if (this.isOutsidePlayerBounds(asteroid.position, bounds)) {
-        this.destroyAsteroid(asteroid, false);
+      if (this.isOutsidePlayerBounds(asteroid.position, asteroidBounds)) {
+        this.wrapAsteroid(asteroid);
       }
     }
 
+    const projectileBounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
     for (const projectile of [...this.projectiles.values()]) {
-      if (this.isOutsidePlayerBounds(projectile.position, bounds)) {
+      if (this.isOutsidePlayerBounds(projectile.position, projectileBounds)) {
         this.destroyProjectile(projectile);
       }
     }
@@ -946,13 +1066,17 @@ class BastardoidsApp {
   updateHud(): void {
     this.ui.updateHud({
       score: this.score,
-      lives: this.lives,
       running: this.running,
-      invulnerable: !!this.player && this.player.invulnerableUntil > this.elapsed,
       highScore: this.highScore,
       velocityX: this.player ? this.player.velocity.x : 0,
       velocityZ: this.player ? this.player.velocity.z : 0,
       performance: this.debugMode ? this.performanceMonitor.getSnapshot() : null,
+    });
+    this.ui.updateShipStatus({
+      hull: this.player?.hull ?? 0,
+      maxHull: this.player?.maxHull ?? this.playerConfig.hull,
+      shield: this.player?.shield ?? 0,
+      maxShield: this.player?.maxShield ?? this.playerConfig.shield,
     });
     this.ui.updateAfterburner({
       charge: this.afterburnerCharge,
@@ -960,12 +1084,198 @@ class BastardoidsApp {
       active: this.afterburnerActive,
       cooling: !this.afterburnerActive && !this.afterburnerShiftHeld,
     });
+    this.ui.updateHeat({
+      current: this.player?.heat ?? 0,
+      max: HEAT_MAX,
+    });
+  }
+
+  updateLoopedMovementAudio(): void {
+    const playerUsingThrusters = THRUSTER_NAMES.some((name) => this.thrusterInputState[name]);
+    if (this.running && this.player && playerUsingThrusters) {
+      this.audioSystem.playLoop(PLAYER_THRUSTER_LOOP_ID, "thrustersLongLoop", {
+        volume: PLAYER_THRUSTER_AUDIO_VOLUME,
+      });
+    } else {
+      this.audioSystem.stopLoop(PLAYER_THRUSTER_LOOP_ID);
+    }
+
+    if (this.running && this.player && this.afterburnerActive) {
+      this.audioSystem.playLoop(PLAYER_AFTERBURNER_LOOP_ID, "afterburnerLoop", {
+        volume: PLAYER_AFTERBURNER_AUDIO_VOLUME,
+      });
+    } else {
+      this.audioSystem.stopLoop(PLAYER_AFTERBURNER_LOOP_ID);
+    }
+
+    if (!this.running || !this.player) {
+      this.stopEnemyThrusterLoops();
+      return;
+    }
+
+    for (const enemy of this.enemies.values()) {
+      const loopId = this.getEnemyThrusterLoopId(enemy.id);
+      const enemyUsingThrusters = THRUSTER_NAMES.some((name) => enemy.thrusterState.inputState[name]);
+      const deltaX = Math.abs(enemy.position.x - this.player.position.x);
+      const deltaZ = Math.abs(enemy.position.z - this.player.position.z);
+      const inRange =
+        deltaX <= ENEMY_THRUSTER_AUDIO_RANGE_X && deltaZ <= ENEMY_THRUSTER_AUDIO_RANGE_Z;
+
+      if (enemy.alive && enemyUsingThrusters && inRange) {
+        this.audioSystem.playLoop(loopId, "thrustersLongLoop", {
+          volume: ENEMY_THRUSTER_AUDIO_VOLUME,
+          playbackRate: ENEMY_THRUSTER_AUDIO_PITCH,
+        });
+      } else {
+        this.audioSystem.stopLoop(loopId);
+      }
+    }
+  }
+
+  stopLoopedMovementAudio(): void {
+    this.audioSystem.stopLoop(PLAYER_THRUSTER_LOOP_ID);
+    this.audioSystem.stopLoop(PLAYER_AFTERBURNER_LOOP_ID);
+    this.stopEnemyThrusterLoops();
+  }
+
+  stopEnemyThrusterLoops(): void {
+    for (const enemyId of this.enemies.keys()) {
+      this.audioSystem.stopLoop(this.getEnemyThrusterLoopId(enemyId));
+    }
+  }
+
+  getEnemyThrusterLoopId(enemyId: number): string {
+    return `${ENEMY_THRUSTER_LOOP_ID_PREFIX}${enemyId}`;
+  }
+
+  getCameraPlanarAxes(): { forward: THREE.Vector3; right: THREE.Vector3 } {
+    const forward = new THREE.Vector3()
+      .subVectors(this.camera.position, this.cameraFocus)
+      .setY(0)
+      .normalize();
+    return {
+      forward,
+      right: new THREE.Vector3(forward.z, 0, -forward.x),
+    };
+  }
+
+  canShipFireWeapon(
+    ship: ShipEntity,
+    weaponDefinition: ReturnType<typeof getWeaponDefinition>,
+  ): boolean {
+    return ship.heat + weaponDefinition.heat <= HEAT_MAX;
+  }
+
+  updateShipHeat(delta: number): void {
+    if (this.player) {
+      this.ventShipHeat(this.player, delta);
+    }
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      this.ventShipHeat(enemy, delta);
+    }
+  }
+
+  updateShieldRegeneration(delta: number): void {
+    if (this.player) {
+      this.regenerateShield(this.player, delta);
+    }
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      this.regenerateShield(enemy, delta);
+    }
+  }
+
+  ventShipHeat(ship: ShipEntity, delta: number): void {
+    const ventMultiplier = ship.heat > HEAT_SOFT_CAP ? OVERHEATED_VENT_MULTIPLIER : 1;
+    ship.heat = Math.max(0, ship.heat - ship.vent * ventMultiplier * delta);
+  }
+
+  regenerateShield(entity: DamageableEntity, delta: number): void {
+    if (
+      entity.maxShield <= 0 ||
+      entity.shieldRegen <= 0 ||
+      entity.shield >= entity.maxShield ||
+      this.elapsed < entity.shieldRegenCooldownUntil
+    ) {
+      return;
+    }
+
+    const shieldPerSecond = entity.maxShield * (entity.shieldRegen / 100);
+    entity.shield = Math.min(entity.maxShield, entity.shield + shieldPerSecond * delta);
+  }
+
+  wrapAsteroid(asteroid: AsteroidEntity): void {
+    if (!this.player) {
+      return;
+    }
+
+    const spawnBounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
+    const despawnBounds = this.getPlayerBounds(this.world.asteroidDespawnDistanceScreens);
+    const { forward, right } = this.getCameraPlanarAxes();
+    const relative = asteroid.position.clone().sub(this.player.position).setY(0);
+    const localForward = relative.dot(forward);
+    const localRight = relative.dot(right);
+    const overflowRight = Math.abs(localRight) / Math.max(despawnBounds.halfWidth, 0.001);
+    const overflowForward = Math.abs(localForward) / Math.max(despawnBounds.halfDepth, 0.001);
+    const jitterFraction = THREE.MathUtils.clamp(
+      this.world.asteroidWrapPositionJitterFraction,
+      0,
+      0.25,
+    );
+
+    let wrappedRight = localRight;
+    let wrappedForward = localForward;
+
+    if (overflowRight >= overflowForward) {
+      wrappedRight = localRight > 0 ? -spawnBounds.halfWidth : spawnBounds.halfWidth;
+      const orthogonalJitter = spawnBounds.halfDepth * jitterFraction;
+      wrappedForward = THREE.MathUtils.clamp(
+        localForward + (Math.random() * 2 - 1) * orthogonalJitter,
+        -spawnBounds.halfDepth,
+        spawnBounds.halfDepth,
+      );
+    } else {
+      wrappedForward = localForward > 0 ? -spawnBounds.halfDepth : spawnBounds.halfDepth;
+      const orthogonalJitter = spawnBounds.halfWidth * jitterFraction;
+      wrappedRight = THREE.MathUtils.clamp(
+        localRight + (Math.random() * 2 - 1) * orthogonalJitter,
+        -spawnBounds.halfWidth,
+        spawnBounds.halfWidth,
+      );
+    }
+
+    asteroid.position
+      .copy(this.player.position)
+      .addScaledVector(forward, wrappedForward)
+      .addScaledVector(right, wrappedRight);
+    asteroid.mesh.position.copy(asteroid.position);
+
+    const speed = asteroid.velocity.length();
+    if (speed > 0.001) {
+      const jitterRadians = THREE.MathUtils.degToRad(this.world.asteroidWrapHeadingJitterDegrees);
+      const headingJitter = (Math.random() * 2 - 1) * jitterRadians;
+      asteroid.velocity
+        .setY(0)
+        .normalize()
+        .applyAxisAngle(new THREE.Vector3(0, 1, 0), headingJitter)
+        .multiplyScalar(speed);
+    }
   }
 
   destroyAsteroid(asteroid: AsteroidEntity, emitExplosion = true): void {
     asteroid.alive = false;
     this.asteroids.delete(asteroid.id);
     if (emitExplosion) {
+      this.playExplosionSfx();
       this.spawnExplosion(
         asteroid.position,
         asteroid.radius,
@@ -979,7 +1289,9 @@ class BastardoidsApp {
   destroyEnemy(enemy: EnemyShipEntity, emitExplosion = true): void {
     enemy.alive = false;
     this.enemies.delete(enemy.id);
+    this.audioSystem.stopLoop(this.getEnemyThrusterLoopId(enemy.id));
     if (emitExplosion) {
+      this.playExplosionSfx();
       this.spawnExplosion(enemy.position, enemy.radius, enemy.definition.lineColor, enemy.velocity);
     }
     this.scene.remove(enemy.mesh);
@@ -992,6 +1304,7 @@ class BastardoidsApp {
   }
 
   clearEntities(): void {
+    this.stopLoopedMovementAudio();
     for (const asteroid of this.asteroids.values()) {
       this.scene.remove(asteroid.mesh);
     }
@@ -1011,6 +1324,7 @@ class BastardoidsApp {
     this.player = null;
     this.playerLines = null;
     this.playerShield = null;
+    this.primaryMouseDown = false;
     this.resetThrusterParticles();
     this.explosionSystem.clear();
   }
@@ -1022,6 +1336,8 @@ class BastardoidsApp {
 
     const player = this.player;
     player.alive = false;
+    this.stopLoopedMovementAudio();
+    this.playExplosionSfx();
     this.spawnExplosion(
       player.position,
       player.radius,
@@ -1045,6 +1361,14 @@ class BastardoidsApp {
       radius,
       color,
       velocity: velocity?.clone(),
+    });
+  }
+
+  playExplosionSfx(): void {
+    this.audioSystem.playSfx("explosion1", {
+      offsetSeconds: 0.05,
+      playbackRateMin: 0.75,
+      playbackRateMax: 1.25,
     });
   }
 
@@ -1108,18 +1432,29 @@ class BastardoidsApp {
       return;
     }
 
-    const invulnerableTimeLeft = this.player.invulnerableUntil - this.elapsed;
-    if (invulnerableTimeLeft <= 0) {
+    if (this.player.maxShield <= 0 || this.player.shield <= 0) {
       this.playerShield.visible = false;
       return;
     }
 
     const shieldMaterial = this.playerShield.material;
-    const pulse = Math.sin(this.elapsed * 10) * 0.5 + 0.5;
+    const shieldRatio = this.player.shield / Math.max(this.player.maxShield, 1);
+    const recentlyHit = this.player.shieldRegenCooldownUntil > this.elapsed;
+    const pulse = Math.sin(this.elapsed * (recentlyHit ? 12 : 6)) * 0.5 + 0.5;
+    const opacityStepMultiplier = Math.ceil(shieldRatio * 5) / 5;
+    const fullShieldOpacity = 0.16;
+    const hitBoost = recentlyHit ? pulse * 0.08 : 0;
+    let hitColor = 0x8fffb5;
+    if (shieldRatio < 0.3) {
+      hitColor = 0xff7448;
+    } else if (shieldRatio < 0.6) {
+      hitColor = 0xffdf72;
+    }
+
     this.playerShield.visible = true;
-    this.playerShield.scale.setScalar(1 + pulse * 0.06);
-    shieldMaterial.opacity = 0.14 + pulse * 0.12;
-    shieldMaterial.color.setHex(pulse > 0.5 ? 0x69d8ff : 0x8fffb5);
+    this.playerShield.scale.setScalar(1 + pulse * 0.04);
+    shieldMaterial.opacity = (fullShieldOpacity + hitBoost) * opacityStepMultiplier;
+    shieldMaterial.color.setHex(recentlyHit ? hitColor : 0x69d8ff);
   }
 
   updatePlayerThrusterHoldState(delta: number): void {

@@ -9,7 +9,7 @@ export interface ExplosionSpawnOptions {
 
 interface ExplosionShard {
   active: boolean;
-  mesh: THREE.Mesh<THREE.BoxGeometry, THREE.MeshBasicMaterial>;
+  mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   baseScale: THREE.Vector3;
@@ -44,10 +44,13 @@ export class ExplosionSystem {
     this.maxShards = maxShards;
     this.maxFlashes = maxFlashes;
 
-    const shardGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const rectangularShardGeometry = new THREE.BoxGeometry(1, 1, 1);
+    const triangularShardGeometry = new THREE.CylinderGeometry(0.58, 0.58, 1, 3);
     const flashGeometry = new THREE.OctahedronGeometry(1, 0);
 
     for (let index = 0; index < this.maxShards; index += 1) {
+      const shardGeometry =
+        Math.random() < 0.4 ? rectangularShardGeometry : triangularShardGeometry;
       const mesh = new THREE.Mesh(
         shardGeometry,
         new THREE.MeshBasicMaterial({
@@ -105,9 +108,9 @@ export class ExplosionSystem {
   spawn(options: ExplosionSpawnOptions): void {
     const radius = Math.max(options.radius, 0.35);
     const sourceVelocity = options.velocity?.clone().setY(0) ?? new THREE.Vector3();
-    const shardCount = THREE.MathUtils.clamp(Math.round((12 + radius * 6) * 1.3), 18, 72);
-    const burstSpeed = 11 + radius * 6.5;
-    const baseScale = Math.max(0.56, radius * 0.4);
+    const shardCount = THREE.MathUtils.clamp(Math.round(12 + radius * 12), 40, 200);
+    const burstSpeed = 9 + radius * 6.5;
+    const baseScale = Math.max(0.16, radius * 0.3);
     const color = new THREE.Color(options.color);
 
     for (let count = 0; count < shardCount; count += 1) {
@@ -127,7 +130,7 @@ export class ExplosionSystem {
 
       shard.active = true;
       shard.age = 0;
-      shard.lifetime = 0.6 + radius * 0.07 + Math.random() * 0.35;
+      shard.lifetime = 2.4 + radius * 0.37 + Math.random() * 0.35;
       shard.position
         .copy(options.position)
         .addScaledVector(direction, radius * (0.08 + Math.random() * 0.22));
@@ -136,9 +139,9 @@ export class ExplosionSystem {
         .multiplyScalar(0.45)
         .addScaledVector(direction, burstSpeed * (0.55 + Math.random() * 0.95));
       shard.baseScale.set(
-        baseScale * (0.7 + Math.random() * 0.9),
-        baseScale * (0.14 + Math.random() * 0.26),
-        baseScale * (0.14 + Math.random() * 0.26),
+        baseScale * (0.6 + Math.random() * 0.9),
+        baseScale * (0.18 + Math.random() * 0.26),
+        baseScale * (0.18 + Math.random() * 0.16),
       );
       shard.rotationAxis
         .set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1)
@@ -157,7 +160,7 @@ export class ExplosionSystem {
     flash.position.copy(options.position);
     flash.baseScale = radius * 1.2;
     flash.age = 0;
-    flash.lifetime = 0.18 + radius * 0.04;
+    flash.lifetime = 0.18 + radius * 0.05;
     flash.mesh.visible = true;
     flash.mesh.material.color.copy(color).offsetHSL(0, 0, 0.18);
     this.updateFlashVisual(flash, 1);

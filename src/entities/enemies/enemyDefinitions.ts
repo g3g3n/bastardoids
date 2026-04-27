@@ -4,8 +4,12 @@ export const ENEMY_SHIP_DEFINITIONS = {
   hunter: {
     name: "hunter",
     mass: 1,
-    maxHealth: 8,
+    maxHull: 80,
+    shield: 0,
+    shieldRegen: 0,
+    shieldRegenDelaySeconds: 2.5,
     radius: 3.9,
+    vent: 20,
     thrust: 25,
     reverseThrust: 20,
     strafeThrust: 12,
