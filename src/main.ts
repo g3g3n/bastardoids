@@ -1444,17 +1444,23 @@ class BastardoidsApp {
     const opacityStepMultiplier = Math.ceil(shieldRatio * 5) / 5;
     const fullShieldOpacity = 0.16;
     const hitBoost = recentlyHit ? pulse * 0.08 : 0;
+    let baseColor = 0x69d8ff;
     let hitColor = 0x8fffb5;
     if (shieldRatio < 0.3) {
-      hitColor = 0xff7448;
+      baseColor = 0xff7448;
+      hitColor = 0xffa06f;
     } else if (shieldRatio < 0.6) {
-      hitColor = 0xffdf72;
+      baseColor = 0xffdf72;
+      hitColor = 0xfff0a0;
+    } else if (shieldRatio < 0.8) {
+      baseColor = 0x8fffb5;
+      hitColor = 0xc5ffd9;
     }
 
     this.playerShield.visible = true;
     this.playerShield.scale.setScalar(1 + pulse * 0.04);
     shieldMaterial.opacity = (fullShieldOpacity + hitBoost) * opacityStepMultiplier;
-    shieldMaterial.color.setHex(recentlyHit ? hitColor : 0x69d8ff);
+    shieldMaterial.color.setHex(recentlyHit ? hitColor : baseColor);
   }
 
   updatePlayerThrusterHoldState(delta: number): void {

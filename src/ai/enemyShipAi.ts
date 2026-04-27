@@ -122,7 +122,7 @@ function computeEnemyPerception(
   const relativeBearing = wrapAngle(Math.atan2(toPlayer.x, toPlayer.z) - enemy.yaw);
   const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
   const predictedInterceptPoint =
-    solveInterceptPoint(enemy.position, player.position, player.velocity, weaponDefinition.speed) ??
+    solveInterceptPoint(enemy.position, enemy.velocity, player.position, player.velocity, weaponDefinition.speed) ??
     player.position.clone();
 
   let nearestAsteroidThreatDistance = Infinity;
@@ -352,8 +352,6 @@ function buildEnemyControlIntent(
     context.elapsed >= enemy.blackboard.nextFireAt &&
     enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius &&
     yawError <= THREE.MathUtils.degToRad(enemy.definition.aimToleranceDegrees) &&
-    enemy.blackboard.currentTactic !== "evadeCollision" &&
-    enemy.blackboard.currentTactic !== "dodgeProjectile" &&
     !hasAsteroidLineBlock(enemy.position, aimPoint, context.asteroids);
 
   const allowReverse =
@@ -397,7 +395,7 @@ function getBaseTacticMovement(
   const desired = new THREE.Vector3();
 
   if (tactic === "closeToRange") {
-    desired.copy(radialToPlayer).multiplyScalar(1.15).addScaledVector(tangent, 0.18);
+    desired.copy(radialToPlayer).multiplyScalar(1.15).addScaledVector(tangent, 0.01);
   } else if (tactic === "holdRange") {
     desired
       .copy(tangent)
@@ -517,14 +515,17 @@ function hasAsteroidLineBlock(
 
 function solveInterceptPoint(
   shooterPosition: THREE.Vector3,
+  shooterVelocity: THREE.Vector3,
   targetPosition: THREE.Vector3,
   targetVelocity: THREE.Vector3,
   projectileSpeed: number,
 ): THREE.Vector3 | null {
   const relativePosition = planarVector(shooterPosition, targetPosition);
+  const planarShooterVelocity = shooterVelocity.clone().setY(0);
   const planarTargetVelocity = targetVelocity.clone().setY(0);
-  const a = planarTargetVelocity.lengthSq() - projectileSpeed * projectileSpeed;
-  const b = 2 * relativePosition.dot(planarTargetVelocity);
+  const relativeTargetVelocity = planarTargetVelocity.clone().sub(planarShooterVelocity);
+  const a = relativeTargetVelocity.lengthSq() - projectileSpeed * projectileSpeed;
+  const b = 2 * relativePosition.dot(relativeTargetVelocity);
   const c = relativePosition.lengthSq();
 
   let time = 0;
