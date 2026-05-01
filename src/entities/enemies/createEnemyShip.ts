@@ -3,6 +3,7 @@ import type {
   EnemyPerceptionSnapshot,
   EnemyShipDefinition,
   EnemyShipEntity,
+  PlayerShield,
   ShipThrusterRuntime,
   ShipLines,
 } from "../../types";
@@ -11,6 +12,7 @@ import { createShipVisual } from "../../visuals/createShipVisual";
 export interface CreatedEnemyShip {
   enemy: EnemyShipEntity;
   lines: ShipLines;
+  shield: PlayerShield;
 }
 
 function createEmptyPerception(): EnemyPerceptionSnapshot {
@@ -18,7 +20,6 @@ function createEmptyPerception(): EnemyPerceptionSnapshot {
     distanceToPlayer: Infinity,
     relativeBearing: 0,
     playerVelocity: new THREE.Vector3(),
-    predictedInterceptPoint: new THREE.Vector3(),
     nearestAsteroidThreatDistance: Infinity,
     nearestAsteroidThreatPosition: null,
     nearestProjectileThreatDistance: Infinity,
@@ -65,6 +66,21 @@ export function createEnemyShip(
   );
   createdVisual.group.position.copy(position);
 
+  const shieldGeometry = new THREE.SphereGeometry(definition.radius * 2.15, 14, 12);
+  const shieldMaterial = new THREE.MeshBasicMaterial({
+    color: 0x69d8ff,
+    transparent: true,
+    opacity: 0.18,
+    wireframe: true,
+    depthWrite: false,
+  });
+  const shield = new THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>(
+    shieldGeometry,
+    shieldMaterial,
+  );
+  shield.visible = false;
+  createdVisual.group.add(shield);
+
   const preferredRange =
     definition.preferredRangeMin +
     (definition.preferredRangeMax - definition.preferredRangeMin) * 0.5;
@@ -106,6 +122,10 @@ export function createEnemyShip(
       nextFireAt: 0,
       spawnPoint: position.clone(),
       perception: createEmptyPerception(),
+      screenTracking: {
+        hasBeenSeen: false,
+        lastSeenAt: -Infinity,
+      },
     },
     thrusterState: createEmptyThrusterState(),
   };
@@ -114,5 +134,6 @@ export function createEnemyShip(
   return {
     enemy,
     lines: createdVisual.lines,
+    shield,
   };
 }

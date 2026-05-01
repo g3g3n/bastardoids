@@ -52,6 +52,12 @@ const PLAYER_THRUSTER_AUDIO_VOLUME = 0.85;
 const PLAYER_AFTERBURNER_AUDIO_VOLUME = 0.8;
 const ENEMY_THRUSTER_AUDIO_VOLUME = 0.55;
 const ENEMY_THRUSTER_AUDIO_PITCH = 1.35;
+const ENEMY_TRACK_PERSIST_SECONDS = 30;
+const ENEMY_TRACK_MAX_DISTANCE = 400;
+const ENEMY_TRACK_EDGE_NDC_X = 0.92;
+const ENEMY_TRACK_EDGE_NDC_Y = 0.82;
+const COLLISION_RING_COLOR = 0x3dff79;
+const COLLISION_RING_Y_OFFSET = 0.12;
 
 class BastardoidsApp {
   scene = new THREE.Scene();
@@ -80,6 +86,7 @@ class BastardoidsApp {
   viewport = new THREE.Vector2();
   world = config.world;
   debugMode = config.debugMode;
+  showCollisionRings = config.showCollisionRings;
   performanceMonitor = new PerformanceMonitor();
   playerConfig = config.player;
   playerWeaponConfig = getWeaponDefinition(this.playerConfig.primaryWeapon);
@@ -112,6 +119,17 @@ class BastardoidsApp {
   player: PlayerState | null = null;
   playerLines: PlayerLines | null = null;
   playerShield: PlayerShield | null = null;
+  enemyShields = new Map<number, PlayerShield>();
+  collisionRingRoot = new THREE.Group();
+  collisionRingGeometry = this.buildCollisionRingGeometry();
+  collisionRingMaterial = new THREE.LineBasicMaterial({
+    color: COLLISION_RING_COLOR,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    depthTest: false,
+  });
+  collisionRings = new Map<number, THREE.LineLoop>();
   nextId = 1;
   score = 0;
   highScore = this.loadHighScore();
@@ -156,6 +174,7 @@ class BastardoidsApp {
     this.scene.add(this.backgroundStars.root);
     this.scene.add(this.worldScenery.root);
     this.scene.add(this.explosionSystem.root);
+    this.scene.add(this.collisionRingRoot);
 
     this.setupThrusterParticles();
   }
@@ -180,6 +199,7 @@ class BastardoidsApp {
         velocity: new THREE.Vector3(),
         age: 0,
         lifetime: 0,
+        whiteness: 0,
       });
     }
 
@@ -199,6 +219,62 @@ class BastardoidsApp {
     this.thrusterPoints = new THREE.Points(geometry, material);
     this.thrusterPoints.frustumCulled = false;
     this.scene.add(this.thrusterPoints);
+  }
+
+  buildCollisionRingGeometry(): THREE.BufferGeometry {
+    const segments = 48;
+    const points: THREE.Vector3[] = [];
+    for (let index = 0; index < segments; index += 1) {
+      const angle = (index / segments) * Math.PI * 2;
+      points.push(new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle)));
+    }
+
+    return new THREE.BufferGeometry().setFromPoints(points);
+  }
+
+  attachCollisionRing(entity: {
+    id: number;
+    radius: number;
+    position: THREE.Vector3;
+  }): void {
+    if (!this.showCollisionRings) {
+      return;
+    }
+
+    const ring = new THREE.LineLoop(this.collisionRingGeometry, this.collisionRingMaterial);
+    ring.scale.setScalar(entity.radius);
+    ring.position.copy(entity.position);
+    ring.position.y += COLLISION_RING_Y_OFFSET;
+    ring.renderOrder = 30;
+    this.collisionRings.set(entity.id, ring);
+    this.collisionRingRoot.add(ring);
+  }
+
+  syncCollisionRing(entity: {
+    id: number;
+    position: THREE.Vector3;
+  }): void {
+    if (!this.showCollisionRings) {
+      return;
+    }
+
+    const ring = this.collisionRings.get(entity.id);
+    if (!ring) {
+      return;
+    }
+
+    ring.position.copy(entity.position);
+    ring.position.y += COLLISION_RING_Y_OFFSET;
+  }
+
+  removeCollisionRing(entityId: number): void {
+    const ring = this.collisionRings.get(entityId);
+    if (!ring) {
+      return;
+    }
+
+    this.collisionRings.delete(entityId);
+    this.collisionRingRoot.remove(ring);
   }
 
   bindEvents(): void {
@@ -286,6 +362,7 @@ class BastardoidsApp {
     this.clearEntities();
     this.createPlayer();
     this.createHunter();
+    this.createHunter2();
     this.updateHud();
     this.ui.hideMenu();
     this.ui.setGameplayCursorHidden(true);
@@ -322,6 +399,7 @@ class BastardoidsApp {
     this.playerLines = createdPlayer.playerLines;
     this.playerShield = createdPlayer.playerShield;
     this.scene.add(this.player.mesh);
+    this.attachCollisionRing(this.player);
 
     this.cameraFocus.set(0, 0, 0);
     this.cameraTarget.set(0, 0, 0);
@@ -338,7 +416,22 @@ class BastardoidsApp {
       new THREE.Vector3(200, 0, 0),
     );
     this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
+    this.enemyShields.set(createdEnemy.enemy.id, createdEnemy.shield);
     this.scene.add(createdEnemy.enemy.mesh);
+    this.attachCollisionRing(createdEnemy.enemy);
+  }
+
+  createHunter2(): void {
+    const definition = getEnemyShipDefinition("hunter");
+    const createdEnemy = createEnemyShip(
+      definition,
+      this.nextId++,
+      new THREE.Vector3(200, 0, 50),
+    );
+    this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
+    this.enemyShields.set(createdEnemy.enemy.id, createdEnemy.shield);
+    this.scene.add(createdEnemy.enemy.mesh);
+    this.attachCollisionRing(createdEnemy.enemy);
   }
 
   createAsteroid(
@@ -379,6 +472,7 @@ class BastardoidsApp {
 
     this.asteroids.set(asteroid.id, asteroid);
     this.scene.add(mesh);
+    this.attachCollisionRing(asteroid);
     return asteroid;
   }
 
@@ -412,6 +506,7 @@ class BastardoidsApp {
 
     this.projectiles.set(projectile.id, projectile);
     this.scene.add(mesh);
+    this.attachCollisionRing(projectile);
     return projectile;
   }
 
@@ -622,12 +717,17 @@ class BastardoidsApp {
 
     this.player.position.addScaledVector(this.player.velocity, delta);
     this.player.mesh.position.copy(this.player.position);
+    this.syncCollisionRing(this.player);
   }
 
   updateEnemyShips(delta: number): void {
     if (!this.player) {
       return;
     }
+
+    const asteroids = [...this.asteroids.values()];
+    const projectiles = [...this.projectiles.values()];
+    const enemies = [...this.enemies.values()];
 
     for (const enemy of this.enemies.values()) {
       if (!enemy.alive) {
@@ -636,9 +736,9 @@ class BastardoidsApp {
 
       const intent = updateEnemyAi(enemy, {
         player: this.player,
-        asteroids: this.asteroids.values(),
-        projectiles: this.projectiles.values(),
-        enemies: this.enemies.values(),
+        asteroids,
+        projectiles,
+        enemies,
         elapsed: this.elapsed,
         delta,
       });
@@ -665,6 +765,7 @@ class BastardoidsApp {
 
       enemy.position.addScaledVector(enemy.velocity, delta);
       enemy.mesh.position.copy(enemy.position);
+      this.syncCollisionRing(enemy);
     }
   }
 
@@ -712,6 +813,7 @@ class BastardoidsApp {
       asteroid.position.addScaledVector(asteroid.velocity, delta);
       asteroid.mesh.position.copy(asteroid.position);
       asteroid.mesh.rotateOnAxis(asteroid.rotationAxis, asteroid.rotationSpeed * delta);
+      this.syncCollisionRing(asteroid);
     }
   }
 
@@ -720,6 +822,7 @@ class BastardoidsApp {
       projectile.position.addScaledVector(projectile.velocity, delta);
       projectile.mesh.position.copy(projectile.position);
       projectile.mesh.rotation.y = Math.atan2(projectile.velocity.x, projectile.velocity.z);
+      this.syncCollisionRing(projectile);
 
       if (this.elapsed >= projectile.expiresAt) {
         this.destroyProjectile(projectile);
@@ -786,9 +889,6 @@ class BastardoidsApp {
         continue;
       }
 
-      if (candidate.type !== "asteroid" && candidate.faction === projectile.faction) {
-        continue;
-      }
       if (candidate.type !== "asteroid" && candidate.id === projectile.ownerId) {
         continue;
       }
@@ -877,31 +977,30 @@ class BastardoidsApp {
     }
 
     if (remainingDamage > 0) {
-      entity.hull -= remainingDamage;
+      entity.hull = Math.max(0, entity.hull - remainingDamage);
     }
 
-    if (entity.hull > 0) {
-      return;
-    }
-
-    if (entity.type === "asteroid") {
-      if (entity.size === "small") {
-        this.destroyAsteroid(entity);
-        this.score += 1;
-      } else {
-        this.splitLargeAsteroid(entity);
+    if (entity.hull <= 0) {
+      if (entity.type === "asteroid") {
+        if (entity.size === "small") {
+          this.destroyAsteroid(entity);
+          this.score += 1;
+        } else {
+          this.splitLargeAsteroid(entity);
+        }
+        return;
       }
+
+      if (entity.type === "enemyShip") {
+        this.destroyEnemy(entity);
+        this.score += entity.definition.scoreValue;
+        return;
+      }
+
+      this.destroyPlayer();
+      this.gameOver();
       return;
     }
-
-    if (entity.type === "enemyShip") {
-      this.destroyEnemy(entity);
-      this.score += entity.definition.scoreValue;
-      return;
-    }
-
-    this.destroyPlayer();
-    this.gameOver();
   }
 
   handleObjectCollisions(): void {
@@ -949,14 +1048,28 @@ class BastardoidsApp {
         second.position.addScaledVector(correction, 1 / second.mass);
         first.mesh.position.copy(first.position);
         second.mesh.position.copy(second.position);
+        this.syncCollisionRing(first);
+        this.syncCollisionRing(second);
 
         if (!impactCollision) {
           continue;
         }
 
+        this.playPlayerCollisionSfx(first, second);
         this.applyAsteroidCollisionDamage(first, second);
       }
     }
+  }
+
+  playPlayerCollisionSfx(first: CollisionBody, second: CollisionBody): void {
+    if (first.type !== "player" && second.type !== "player") {
+      return;
+    }
+
+    this.audioSystem.playSfx("bump1", {
+      volume: 1.5,
+      offsetSeconds: 0.05,
+    });
   }
 
   splitLargeAsteroid(asteroid: AsteroidEntity): void {
@@ -1072,6 +1185,7 @@ class BastardoidsApp {
       velocityZ: this.player ? this.player.velocity.z : 0,
       performance: this.debugMode ? this.performanceMonitor.getSnapshot() : null,
     });
+    this.ui.updateEnemyTrackers(this.buildEnemyTrackerSnapshots());
     this.ui.updateShipStatus({
       hull: this.player?.hull ?? 0,
       maxHull: this.player?.maxHull ?? this.playerConfig.hull,
@@ -1088,6 +1202,102 @@ class BastardoidsApp {
       current: this.player?.heat ?? 0,
       max: HEAT_MAX,
     });
+  }
+
+  buildEnemyTrackerSnapshots(): Array<{
+    enemyId: number;
+    screenX: number;
+    screenY: number;
+    angleDegrees: number;
+    distanceUnits: number;
+  }> {
+    if (!this.running || !this.player) {
+      return [];
+    }
+
+    const snapshots: Array<{
+      enemyId: number;
+      screenX: number;
+      screenY: number;
+      angleDegrees: number;
+      distanceUnits: number;
+    }> = [];
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      const visibility = this.getEnemyScreenVisibility(enemy);
+      const distanceUnits = Math.hypot(
+        enemy.position.x - this.player.position.x,
+        enemy.position.z - this.player.position.z,
+      );
+      const tracking = enemy.blackboard.screenTracking;
+
+      if (visibility.visible) {
+        tracking.hasBeenSeen = true;
+        tracking.lastSeenAt = this.elapsed;
+        continue;
+      }
+
+      const trackingExpired =
+        !tracking.hasBeenSeen ||
+        this.elapsed - tracking.lastSeenAt > ENEMY_TRACK_PERSIST_SECONDS ||
+        distanceUnits > ENEMY_TRACK_MAX_DISTANCE;
+
+      if (trackingExpired) {
+        tracking.hasBeenSeen = false;
+        continue;
+      }
+
+      const clampedNdc = this.clampNdcToScreenEdge(visibility.ndc);
+      snapshots.push({
+        enemyId: enemy.id,
+        screenX: ((clampedNdc.x + 1) * this.viewport.x) / 2,
+        screenY: ((1 - clampedNdc.y) * this.viewport.y) / 2,
+        angleDegrees: THREE.MathUtils.radToDeg(Math.atan2(-clampedNdc.y, clampedNdc.x)),
+        distanceUnits,
+      });
+    }
+
+    return snapshots;
+  }
+
+  getEnemyScreenVisibility(enemy: EnemyShipEntity): {
+    visible: boolean;
+    ndc: THREE.Vector2;
+  } {
+    const projected = enemy.position.clone().project(this.camera);
+    const cameraSpace = enemy.position.clone().applyMatrix4(this.camera.matrixWorldInverse);
+    const ndc = new THREE.Vector2(projected.x, projected.y);
+    const inFrontOfCamera = cameraSpace.z < 0;
+    const visible =
+      inFrontOfCamera &&
+      projected.z >= -1 &&
+      projected.z <= 1 &&
+      Math.abs(projected.x) <= 1 &&
+      Math.abs(projected.y) <= 1;
+
+    if (!inFrontOfCamera) {
+      ndc.multiplyScalar(-1);
+    }
+
+    if (ndc.lengthSq() <= 0.0001) {
+      ndc.set(0, -1);
+    }
+
+    return { visible, ndc };
+  }
+
+  clampNdcToScreenEdge(ndc: THREE.Vector2): THREE.Vector2 {
+    const direction = ndc.lengthSq() > 0.0001 ? ndc.clone() : new THREE.Vector2(0, -1);
+    const scale = Math.min(
+      ENEMY_TRACK_EDGE_NDC_X / Math.max(Math.abs(direction.x), 0.0001),
+      ENEMY_TRACK_EDGE_NDC_Y / Math.max(Math.abs(direction.y), 0.0001),
+    );
+
+    return direction.multiplyScalar(scale);
   }
 
   updateLoopedMovementAudio(): void {
@@ -1258,6 +1468,7 @@ class BastardoidsApp {
       .addScaledVector(forward, wrappedForward)
       .addScaledVector(right, wrappedRight);
     asteroid.mesh.position.copy(asteroid.position);
+    this.syncCollisionRing(asteroid);
 
     const speed = asteroid.velocity.length();
     if (speed > 0.001) {
@@ -1274,6 +1485,7 @@ class BastardoidsApp {
   destroyAsteroid(asteroid: AsteroidEntity, emitExplosion = true): void {
     asteroid.alive = false;
     this.asteroids.delete(asteroid.id);
+    this.removeCollisionRing(asteroid.id);
     if (emitExplosion) {
       this.playExplosionSfx();
       this.spawnExplosion(
@@ -1289,6 +1501,8 @@ class BastardoidsApp {
   destroyEnemy(enemy: EnemyShipEntity, emitExplosion = true): void {
     enemy.alive = false;
     this.enemies.delete(enemy.id);
+    this.enemyShields.delete(enemy.id);
+    this.removeCollisionRing(enemy.id);
     this.audioSystem.stopLoop(this.getEnemyThrusterLoopId(enemy.id));
     if (emitExplosion) {
       this.playExplosionSfx();
@@ -1300,6 +1514,7 @@ class BastardoidsApp {
   destroyProjectile(projectile: ProjectileEntity): void {
     projectile.alive = false;
     this.projectiles.delete(projectile.id);
+    this.removeCollisionRing(projectile.id);
     this.scene.remove(projectile.mesh);
   }
 
@@ -1316,7 +1531,10 @@ class BastardoidsApp {
     }
     this.asteroids.clear();
     this.enemies.clear();
+    this.enemyShields.clear();
     this.projectiles.clear();
+    this.collisionRings.clear();
+    this.collisionRingRoot.clear();
 
     if (this.player) {
       this.scene.remove(this.player.mesh);
@@ -1344,6 +1562,7 @@ class BastardoidsApp {
       this.playerLines?.material.color.getHex() ?? 0xffffff,
       player.velocity,
     );
+    this.removeCollisionRing(player.id);
     this.scene.remove(player.mesh);
     this.player = null;
     this.playerLines = null;
@@ -1428,18 +1647,29 @@ class BastardoidsApp {
   }
 
   updateShieldEffect(): void {
-    if (!this.player || !this.playerShield) {
+    if (this.player && this.playerShield) {
+      this.updateShieldMesh(this.player, this.playerShield);
+    }
+
+    for (const enemy of this.enemies.values()) {
+      const shield = this.enemyShields.get(enemy.id);
+      if (!shield) {
+        continue;
+      }
+
+      this.updateShieldMesh(enemy, shield);
+    }
+  }
+
+  updateShieldMesh(ship: ShipEntity, shieldMesh: PlayerShield): void {
+    if (ship.maxShield <= 0 || ship.shield <= 0) {
+      shieldMesh.visible = false;
       return;
     }
 
-    if (this.player.maxShield <= 0 || this.player.shield <= 0) {
-      this.playerShield.visible = false;
-      return;
-    }
-
-    const shieldMaterial = this.playerShield.material;
-    const shieldRatio = this.player.shield / Math.max(this.player.maxShield, 1);
-    const recentlyHit = this.player.shieldRegenCooldownUntil > this.elapsed;
+    const shieldMaterial = shieldMesh.material;
+    const shieldRatio = ship.shield / Math.max(ship.maxShield, 1);
+    const recentlyHit = ship.shieldRegenCooldownUntil > this.elapsed;
     const pulse = Math.sin(this.elapsed * (recentlyHit ? 12 : 6)) * 0.5 + 0.5;
     const opacityStepMultiplier = Math.ceil(shieldRatio * 5) / 5;
     const fullShieldOpacity = 0.16;
@@ -1457,8 +1687,8 @@ class BastardoidsApp {
       hitColor = 0xc5ffd9;
     }
 
-    this.playerShield.visible = true;
-    this.playerShield.scale.setScalar(1 + pulse * 0.04);
+    shieldMesh.visible = true;
+    shieldMesh.scale.setScalar(1 + pulse * 0.04);
     shieldMaterial.opacity = (fullShieldOpacity + hitBoost) * opacityStepMultiplier;
     shieldMaterial.color.setHex(recentlyHit ? hitColor : baseColor);
   }
@@ -1695,10 +1925,15 @@ class BastardoidsApp {
     const normalOffset = (Math.random() * 2 - 1) * spawnJitter;
     const lateralVelocity = (Math.random() * 2 - 1) * spread;
     const verticalVelocity = (Math.random() * 2 - 1) * spread * 0.35;
+    const afterburnerWhiteness =
+      ship.type === "player" && emitter.name === "forward"
+        ? THREE.MathUtils.lerp(0, 0.7, this.getAfterburnerParticleRamp())
+        : 0;
 
     particle.active = true;
     particle.age = 0;
     particle.lifetime = lifetime * (0.85 + Math.random() * 0.3);
+    particle.whiteness = afterburnerWhiteness;
     particle.position
       .copy(emitter.position)
       .addScaledVector(emitter.tangent, tangentOffset)
@@ -1736,9 +1971,19 @@ class BastardoidsApp {
       this.thrusterParticlePositions[offset] = particle.position.x;
       this.thrusterParticlePositions[offset + 1] = particle.position.y;
       this.thrusterParticlePositions[offset + 2] = particle.position.z;
+      const baseGreen = THREE.MathUtils.lerp(0.25, 0.8, lifeAlpha);
+      const baseBlue = THREE.MathUtils.lerp(0.02, 0.18, lifeAlpha);
       this.thrusterParticleColors[offset] = 1;
-      this.thrusterParticleColors[offset + 1] = THREE.MathUtils.lerp(0.25, 0.8, lifeAlpha);
-      this.thrusterParticleColors[offset + 2] = THREE.MathUtils.lerp(0.02, 0.18, lifeAlpha);
+      this.thrusterParticleColors[offset + 1] = THREE.MathUtils.lerp(
+        baseGreen,
+        0.96,
+        particle.whiteness,
+      );
+      this.thrusterParticleColors[offset + 2] = THREE.MathUtils.lerp(
+        baseBlue,
+        0.72,
+        particle.whiteness,
+      );
     }
 
     this.thrusterPoints.geometry.attributes.position.needsUpdate = true;
@@ -1760,6 +2005,7 @@ class BastardoidsApp {
       particle.active = false;
       particle.age = 0;
       particle.lifetime = 0;
+      particle.whiteness = 0;
       particle.position.set(0, -9999, 0);
       particle.velocity.set(0, 0, 0);
     }

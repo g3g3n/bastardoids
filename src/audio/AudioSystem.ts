@@ -1,5 +1,8 @@
 import afterburnerLoopUrl from "../assets/sfx/afterburner-loop.mp3";
+import bump1Url from "../assets/sfx/bump-1.mp3";
+import crash1Url from "../assets/sfx/crash-1.mp3";
 import explosion1Url from "../assets/sfx/explosion-1.mp3";
+import explosion2Url from "../assets/sfx/explosion-2.mp3";
 import laserHitUrl from "../assets/sfx/laser-hit.mp3";
 import laserShot1Url from "../assets/sfx/laser-shot-1.mp3";
 import plasmaOrbShot1Url from "../assets/sfx/plasmaOrb-shot-1.mp3";
@@ -22,7 +25,10 @@ export interface LoopSfxOptions {
 
 const SFX_ASSET_URLS: Record<SoundEffectName, string> = {
   afterburnerLoop: afterburnerLoopUrl,
+  crash1: crash1Url,
+  bump1: bump1Url,
   explosion1: explosion1Url,
+  explosion2: explosion2Url,
   laserHit: laserHitUrl,
   laserShot1: laserShot1Url,
   plasmaOrbShot1: plasmaOrbShot1Url,

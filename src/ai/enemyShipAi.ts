@@ -13,9 +13,9 @@ import type {
 
 export interface EnemyAiContext {
   player: PlayerState | null;
-  asteroids: Iterable<AsteroidEntity>;
-  projectiles: Iterable<ProjectileEntity>;
-  enemies: Iterable<EnemyShipEntity>;
+  asteroids: readonly AsteroidEntity[];
+  projectiles: readonly ProjectileEntity[];
+  enemies: readonly EnemyShipEntity[];
   elapsed: number;
   delta: number;
 }
@@ -105,7 +105,6 @@ function computeEnemyPerception(
       distanceToPlayer: Infinity,
       relativeBearing: 0,
       playerVelocity: new THREE.Vector3(),
-      predictedInterceptPoint: new THREE.Vector3(),
       nearestAsteroidThreatDistance: Infinity,
       nearestAsteroidThreatPosition: null,
       nearestProjectileThreatDistance: Infinity,
@@ -120,10 +119,6 @@ function computeEnemyPerception(
   const toPlayer = planarVector(enemy.position, player.position);
   const distanceToPlayer = toPlayer.length();
   const relativeBearing = wrapAngle(Math.atan2(toPlayer.x, toPlayer.z) - enemy.yaw);
-  const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
-  const predictedInterceptPoint =
-    solveInterceptPoint(enemy.position, enemy.velocity, player.position, player.velocity, weaponDefinition.speed) ??
-    player.position.clone();
 
   let nearestAsteroidThreatDistance = Infinity;
   let nearestAsteroidThreatPosition: THREE.Vector3 | null = null;
@@ -138,7 +133,7 @@ function computeEnemyPerception(
       enemy.velocity,
       asteroid.position,
       asteroid.velocity,
-      1.4,
+      2.4,
     );
     if (approach.distance < nearestAsteroidThreatDistance) {
       nearestAsteroidThreatDistance = approach.distance;
@@ -193,7 +188,6 @@ function computeEnemyPerception(
     distanceToPlayer,
     relativeBearing,
     playerVelocity: player.velocity.clone(),
-    predictedInterceptPoint,
     nearestAsteroidThreatDistance,
     nearestAsteroidThreatPosition,
     nearestProjectileThreatDistance,
@@ -216,11 +210,17 @@ function chooseEmergencyTactic(
     return "dodgeProjectile";
   }
 
-  const collisionThreat =
+  const objectCollisionThreat =
+    perception.timeToCollisionAsteroid < 1.5 ||
+    perception.nearestEnemySeparationDistance < enemy.radius * 3.25;
+  if (objectCollisionThreat) {
+    return "evadeObjectCollision";
+  }
+
+  const playerCollisionThreat =
     perception.distanceToPlayer < enemy.blackboard.preferredRange * 0.55 ||
-    perception.timeToCollisionPlayer < 0.75 ||
-    perception.timeToCollisionAsteroid < 0.9;
-  return collisionThreat ? "evadeCollision" : null;
+    perception.timeToCollisionPlayer < 0.75;
+  return playerCollisionThreat ? "evadePlayerCollision" : null;
 }
 
 function chooseEnemyTactic(
@@ -265,7 +265,8 @@ function chooseEnemyTactic(
       definition.orbitWeight *
       (enemy.blackboard.orbitDirection < 0 ? 1.1 : 0.85),
     breakAway: tooClose * 3.4 + collisionThreat * 1.2,
-    evadeCollision: collisionThreat * definition.avoidanceWeight * 2.8,
+    evadePlayerCollision: 0,
+    evadeObjectCollision: collisionThreat * definition.avoidanceWeight * 2.8,
     dodgeProjectile: projectileThreat * definition.projectileAvoidanceWeight * 3.1,
     repositionBehind: withinBand * behindAlignment * definition.behindWeight * 1.8,
     returnToSpawn: 0,
@@ -292,7 +293,14 @@ function buildEnemyControlIntent(
     return IDLE_INTENT;
   }
 
-  const desiredMovement = getBaseTacticMovement(enemy, player, enemy.blackboard.currentTactic);
+  const objectThreatPosition = getObjectCollisionThreatPosition(enemy, enemy.blackboard.perception);
+  const desiredMovement = getBaseTacticMovement(
+    enemy,
+    player,
+    enemy.blackboard.currentTactic,
+    enemy.blackboard.perception,
+    objectThreatPosition,
+  );
   desiredMovement.add(getAvoidanceVector(enemy, player, enemy.blackboard.perception));
 
   if (enemy.blackboard.currentTactic === "returnToSpawn") {
@@ -341,22 +349,46 @@ function buildEnemyControlIntent(
   const desiredDirection =
     desiredMovement.lengthSq() > 0.0001 ? desiredMovement.normalize() : new THREE.Vector3();
 
+  const weapon = getWeaponDefinition(enemy.definition.primaryWeapon);
   const aimPoint =
     enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius
-      ? enemy.blackboard.perception.predictedInterceptPoint
+      ? (() => {
+          const fullLeadPoint =
+            solveInterceptPoint(
+              enemy.position,
+              enemy.velocity,
+              player.position,
+              player.velocity,
+              weapon.speed,
+            ) ?? player.position;
+
+          let leadFactor = 1;
+          if (
+            enemy.blackboard.currentTactic === "orbitLeft" ||
+            enemy.blackboard.currentTactic === "orbitRight"
+          ) {
+            leadFactor = 0.65;
+          } else if (enemy.blackboard.currentTactic === "holdRange") {
+            leadFactor = 0.70;
+          }
+
+          return new THREE.Vector3().lerpVectors(player.position, fullLeadPoint, leadFactor);
+        })()
       : player.position;
   const targetYaw = Math.atan2(aimPoint.x - enemy.position.x, aimPoint.z - enemy.position.z);
   const yawError = Math.abs(wrapAngle(targetYaw - enemy.yaw));
-  const weapon = getWeaponDefinition(enemy.definition.primaryWeapon);
   const canFire =
     context.elapsed >= enemy.blackboard.nextFireAt &&
     enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius &&
     yawError <= THREE.MathUtils.degToRad(enemy.definition.aimToleranceDegrees) &&
-    !hasAsteroidLineBlock(enemy.position, aimPoint, context.asteroids);
+    !hasLineBlock(enemy, enemy.position, player.position, context.asteroids, context.enemies);
 
+  const objectThreatBehind =
+    objectThreatPosition !== null && isThreatBehindEnemy(enemy, objectThreatPosition);
   const allowReverse =
     enemy.blackboard.currentTactic === "breakAway" ||
-    enemy.blackboard.currentTactic === "evadeCollision";
+    enemy.blackboard.currentTactic === "evadePlayerCollision" ||
+    (enemy.blackboard.currentTactic === "evadeObjectCollision" && !objectThreatBehind);
   let forwardThrottle = Math.max(0, desiredDirection.dot(forward));
   let reverseThrottle = allowReverse ? Math.max(0, -desiredDirection.dot(forward)) : 0;
   let strafe = THREE.MathUtils.clamp(desiredDirection.dot(right), -1, 1);
@@ -381,6 +413,8 @@ function getBaseTacticMovement(
   enemy: EnemyShipEntity,
   player: PlayerState,
   tactic: EnemyTactic,
+  perception: EnemyPerceptionSnapshot,
+  objectThreatPosition: THREE.Vector3 | null,
 ): THREE.Vector3 {
   const toPlayer = planarVector(enemy.position, player.position);
   const distance = Math.max(toPlayer.length(), 0.001);
@@ -411,8 +445,23 @@ function getBaseTacticMovement(
       .addScaledVector(awayFromPlayer, Math.max(-radialCorrection, 0) * 0.55);
   } else if (tactic === "breakAway") {
     desired.copy(awayFromPlayer).multiplyScalar(1.2).addScaledVector(tangent, 0.35);
-  } else if (tactic === "evadeCollision") {
+  } else if (tactic === "evadePlayerCollision") {
     desired.copy(awayFromPlayer).multiplyScalar(1.5).addScaledVector(tangent, 0.45);
+  } else if (tactic === "evadeObjectCollision") {
+    const threatPosition =
+      objectThreatPosition ??
+      perception.nearestAsteroidThreatPosition ??
+      perception.nearestEnemySeparationPosition;
+    if (threatPosition) {
+      const awayFromThreat = planarVector(threatPosition, enemy.position).normalize();
+      const threatTangent =
+        enemy.blackboard.orbitDirection > 0
+          ? new THREE.Vector3(-awayFromThreat.z, 0, awayFromThreat.x)
+          : new THREE.Vector3(awayFromThreat.z, 0, -awayFromThreat.x);
+      desired.copy(awayFromThreat).multiplyScalar(1.6).addScaledVector(threatTangent, 0.4);
+    } else {
+      desired.copy(awayFromPlayer).multiplyScalar(1.35).addScaledVector(tangent, 0.35);
+    }
   } else if (tactic === "dodgeProjectile") {
     desired.copy(tangent).multiplyScalar(1.35).addScaledVector(awayFromPlayer, 0.5);
   } else if (tactic === "repositionBehind") {
@@ -429,6 +478,34 @@ function getBaseTacticMovement(
   }
 
   return desired;
+}
+
+function getObjectCollisionThreatPosition(
+  enemy: EnemyShipEntity,
+  perception: EnemyPerceptionSnapshot,
+): THREE.Vector3 | null {
+  const asteroidThreatActive =
+    perception.nearestAsteroidThreatPosition !== null &&
+    perception.timeToCollisionAsteroid < 1.5;
+  const enemyThreatActive =
+    perception.nearestEnemySeparationPosition !== null &&
+    perception.nearestEnemySeparationDistance < enemy.radius * 3.25;
+
+  if (asteroidThreatActive && enemyThreatActive) {
+    return perception.timeToCollisionAsteroid < 0.8
+      ? perception.nearestAsteroidThreatPosition
+      : perception.nearestEnemySeparationPosition;
+  }
+
+  if (asteroidThreatActive) {
+    return perception.nearestAsteroidThreatPosition;
+  }
+
+  if (enemyThreatActive) {
+    return perception.nearestEnemySeparationPosition;
+  }
+
+  return null;
 }
 
 function getAvoidanceVector(
@@ -485,10 +562,22 @@ function getRepulsionVector(
   return offset.normalize().multiplyScalar(strength);
 }
 
-function hasAsteroidLineBlock(
+function isThreatBehindEnemy(enemy: EnemyShipEntity, threatPosition: THREE.Vector3): boolean {
+  const toThreat = planarVector(enemy.position, threatPosition);
+  if (toThreat.lengthSq() <= 0.0001) {
+    return false;
+  }
+
+  const forward = getShipBasis(enemy.yaw).forward;
+  return forward.dot(toThreat.normalize()) < 0;
+}
+
+function hasLineBlock(
+  shooter: EnemyShipEntity,
   from: THREE.Vector3,
   to: THREE.Vector3,
   asteroids: Iterable<AsteroidEntity>,
+  enemies: Iterable<EnemyShipEntity>,
 ): boolean {
   const segment = planarVector(from, to);
   const segmentLengthSq = segment.lengthSq();
@@ -506,6 +595,20 @@ function hasAsteroidLineBlock(
     const closestPoint = from.clone().addScaledVector(segment, projection);
     const distanceToLine = planarDistance(closestPoint, asteroid.position);
     if (distanceToLine <= asteroid.radius + 2) {
+      return true;
+    }
+  }
+
+  for (const enemy of enemies) {
+    if (!enemy.alive || enemy.id === shooter.id) {
+      continue;
+    }
+
+    const toEnemy = planarVector(from, enemy.position);
+    const projection = THREE.MathUtils.clamp(toEnemy.dot(segment) / segmentLengthSq, 0, 1);
+    const closestPoint = from.clone().addScaledVector(segment, projection);
+    const distanceToLine = planarDistance(closestPoint, enemy.position);
+    if (distanceToLine <= enemy.radius + 1) {
       return true;
     }
   }

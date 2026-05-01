@@ -18,7 +18,10 @@ export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
 export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
 export type SoundEffectName =
   | "afterburnerLoop"
+  | "bump1"
+  | "crash1"
   | "explosion1"
+  | "explosion2"
   | "laserHit"
   | "laserShot1"
   | "plasmaOrbShot1"
@@ -31,7 +34,8 @@ export type EnemyTactic =
   | "orbitLeft"
   | "orbitRight"
   | "breakAway"
-  | "evadeCollision"
+  | "evadePlayerCollision"
+  | "evadeObjectCollision"
   | "dodgeProjectile"
   | "repositionBehind"
   | "returnToSpawn";
@@ -54,6 +58,8 @@ export interface WorldConfig {
   cameraDistance: number;
   cameraHeight: number;
   cameraLookAhead: number;
+  cameraFacingWeight: number;
+  cameraLookAheadAlignmentExponent: number;
   cameraTetherStrength: number;
   cameraTetherDamping: number;
   cameraMaxSpeed: number;
@@ -175,6 +181,7 @@ export interface PhysicsConfig {
 
 export interface GameConfig {
   debugMode: boolean;
+  showCollisionRings: boolean;
   world: WorldConfig;
   player: PlayerConfig;
   thrusters: ThrusterConfig;
@@ -239,7 +246,6 @@ export interface EnemyPerceptionSnapshot {
   distanceToPlayer: number;
   relativeBearing: number;
   playerVelocity: Vector3;
-  predictedInterceptPoint: Vector3;
   nearestAsteroidThreatDistance: number;
   nearestAsteroidThreatPosition: Vector3 | null;
   nearestProjectileThreatDistance: number;
@@ -248,6 +254,11 @@ export interface EnemyPerceptionSnapshot {
   nearestEnemySeparationPosition: Vector3 | null;
   timeToCollisionPlayer: number;
   timeToCollisionAsteroid: number;
+}
+
+export interface EnemyScreenTrackingState {
+  hasBeenSeen: boolean;
+  lastSeenAt: number;
 }
 
 export interface EnemyBlackboard {
@@ -263,6 +274,7 @@ export interface EnemyBlackboard {
   nextFireAt: number;
   spawnPoint: Vector3;
   perception: EnemyPerceptionSnapshot;
+  screenTracking: EnemyScreenTrackingState;
 }
 
 export interface ShipThrusterRuntime {
@@ -323,6 +335,7 @@ export interface ThrusterParticle {
   velocity: Vector3;
   age: number;
   lifetime: number;
+  whiteness: number;
 }
 
 export interface ThrusterEmitter {

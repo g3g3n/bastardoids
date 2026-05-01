@@ -33,6 +33,14 @@ export interface HeatSnapshot {
   max: number;
 }
 
+export interface EnemyTrackerSnapshot {
+  enemyId: number;
+  screenX: number;
+  screenY: number;
+  angleDegrees: number;
+  distanceUnits: number;
+}
+
 export class GameUi {
   root: HTMLDivElement;
   hud: HTMLDivElement;
@@ -45,6 +53,7 @@ export class GameUi {
   shipHullFill: HTMLDivElement;
   shipHullLabel: HTMLSpanElement;
   crosshair: HTMLDivElement;
+  enemyTrackerLayer: HTMLDivElement;
   afterburnerGauge: HTMLDivElement;
   afterburnerFill: HTMLDivElement;
   afterburnerLabel: HTMLSpanElement;
@@ -54,6 +63,7 @@ export class GameUi {
   startButton: HTMLButtonElement;
   quitButton: HTMLButtonElement;
   highScoreLine: HTMLDivElement;
+  enemyTrackerElements = new Map<number, HTMLDivElement>();
 
   constructor(container: HTMLElement) {
     this.root = document.createElement("div");
@@ -150,6 +160,10 @@ export class GameUi {
     this.crosshair.className = "crosshair";
     this.root.append(this.crosshair);
 
+    this.enemyTrackerLayer = document.createElement("div");
+    this.enemyTrackerLayer.className = "enemy-tracker-layer";
+    this.root.append(this.enemyTrackerLayer);
+
     this.menu = document.createElement("div");
     this.menu.className = "menu";
     this.menu.innerHTML = `
@@ -244,13 +258,15 @@ export class GameUi {
     const hullPercent = snapshot.maxHull > 0 ? Math.max(0, Math.min(snapshot.hull / snapshot.maxHull, 1)) : 0;
     const shieldPercent =
       snapshot.maxShield > 0 ? Math.max(0, Math.min(snapshot.shield / snapshot.maxShield, 1)) : 0;
+    const displayedHull = snapshot.hull > 0 ? Math.ceil(snapshot.hull) : 0;
+    const displayedShield = snapshot.shield > 0 ? Math.ceil(snapshot.shield) : 0;
 
     this.shipHullFill.style.height = `${hullPercent * 100}%`;
     this.shipHullFill.style.background = this.getHullColor(hullPercent);
-    this.shipHullLabel.textContent = `Hull ${Math.max(0, Math.round(snapshot.hull))} / ${Math.round(snapshot.maxHull)}`;
+    this.shipHullLabel.textContent = `Hull ${displayedHull} / ${Math.round(snapshot.maxHull)}`;
 
     this.shipShieldFill.style.transform = `scaleX(${shieldPercent})`;
-    this.shipShieldLabel.textContent = `Shield ${Math.max(0, Math.round(snapshot.shield))} / ${Math.round(snapshot.maxShield)}`;
+    this.shipShieldLabel.textContent = `Shield ${displayedShield} / ${Math.round(snapshot.maxShield)}`;
     this.shipStatus.classList.toggle("shield-empty", snapshot.maxShield <= 0 || shieldPercent <= 0.001);
   }
 
@@ -278,6 +294,51 @@ export class GameUi {
   updateCrosshairPosition(pointerNdc: THREE.Vector2, viewport: THREE.Vector2): void {
     this.crosshair.style.left = `${((pointerNdc.x + 1) * viewport.x) / 2}px`;
     this.crosshair.style.top = `${((1 - pointerNdc.y) * viewport.y) / 2}px`;
+  }
+
+  updateEnemyTrackers(trackers: EnemyTrackerSnapshot[]): void {
+    const activeIds = new Set<number>();
+
+    for (const tracker of trackers) {
+      activeIds.add(tracker.enemyId);
+      let element = this.enemyTrackerElements.get(tracker.enemyId);
+      if (!element) {
+        element = document.createElement("div");
+        element.className = "enemy-tracker";
+        element.innerHTML = `
+          <div class="enemy-tracker-chevron">
+            <span></span>
+            <span></span>
+          </div>
+          <span class="enemy-tracker-distance">0 U</span>
+        `;
+        this.enemyTrackerElements.set(tracker.enemyId, element);
+        this.enemyTrackerLayer.append(element);
+      }
+
+      const chevron = requireElement(
+        element.querySelector<HTMLDivElement>(".enemy-tracker-chevron"),
+        "Enemy tracker chevron element not found.",
+      );
+      const distanceLabel = requireElement(
+        element.querySelector<HTMLSpanElement>(".enemy-tracker-distance"),
+        "Enemy tracker distance element not found.",
+      );
+
+      element.style.left = `${tracker.screenX}px`;
+      element.style.top = `${tracker.screenY}px`;
+      chevron.style.transform = `rotate(${tracker.angleDegrees}deg)`;
+      distanceLabel.textContent = `${Math.max(0, Math.round(tracker.distanceUnits))} U`;
+    }
+
+    for (const [enemyId, element] of this.enemyTrackerElements) {
+      if (activeIds.has(enemyId)) {
+        continue;
+      }
+
+      element.remove();
+      this.enemyTrackerElements.delete(enemyId);
+    }
   }
 
   private getHeatColor(current: number, max: number): string {

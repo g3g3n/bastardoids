@@ -30,7 +30,10 @@ export class CameraRig {
     }
 
     const lookDirection = this.getLookDirection(player);
-    this.target.copy(player.position).addScaledVector(lookDirection, this.world.cameraLookAhead);
+    const lookAheadFactor = this.getLookAheadFactor(player);
+    this.target
+      .copy(player.position)
+      .addScaledVector(lookDirection, this.world.cameraLookAhead * lookAheadFactor);
     this.target.y = 0;
 
     if (force) {
@@ -86,11 +89,41 @@ export class CameraRig {
   }
 
   getLookDirection(player: PlayerState): THREE.Vector3 {
+    const facingDirection = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
     const velocityDirection = player.velocity.clone().setY(0);
-    if (velocityDirection.lengthSq() > 1) {
-      return velocityDirection.normalize();
+    if (velocityDirection.lengthSq() <= 1) {
+      return facingDirection;
     }
 
-    return new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+    velocityDirection.normalize();
+    const blendedDirection = velocityDirection.addScaledVector(
+      facingDirection,
+      this.world.cameraFacingWeight,
+    );
+    if (blendedDirection.lengthSq() <= 0.0001) {
+      return facingDirection;
+    }
+
+    return blendedDirection.normalize();
+  }
+
+  getLookAheadFactor(player: PlayerState): number {
+    const facingDirection = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+    const velocityDirection = player.velocity.clone().setY(0);
+    if (velocityDirection.lengthSq() <= 1) {
+      return 1;
+    }
+
+    velocityDirection.normalize();
+    const alignment = THREE.MathUtils.clamp(
+      velocityDirection.dot(facingDirection),
+      -1,
+      1,
+    );
+    const normalizedAlignment = (alignment + 1) * 0.5;
+    return Math.pow(
+      THREE.MathUtils.clamp(normalizedAlignment, 0, 1),
+      this.world.cameraLookAheadAlignmentExponent,
+    );
   }
 }

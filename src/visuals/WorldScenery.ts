@@ -14,9 +14,11 @@ export class WorldScenery {
       wireframe: true,
       transparent: true,
       opacity: 0.75,
+      depthWrite: false,
     });
     const planet = new THREE.Mesh(geometry, material);
     planet.position.set(700, -4220, -4000);
+    planet.renderOrder = -20;
     this.root.add(planet);
   }
 }

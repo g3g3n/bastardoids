@@ -13,7 +13,7 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
   const group = createdVisual.group;
   const lines = createdVisual.lines;
 
-  const shieldGeometry = new THREE.SphereGeometry(playerConfig.radius * 2.15, 14, 12);
+  const shieldGeometry = new THREE.SphereGeometry(playerConfig.radius * 1.3, 14, 12);
   const shieldMaterial = new THREE.MeshBasicMaterial({
     color: 0x69d8ff,
     transparent: true,

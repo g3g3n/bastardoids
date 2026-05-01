@@ -345,6 +345,54 @@ body {
   height: 18px;
 }
 
+.enemy-tracker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.enemy-tracker {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+}
+
+.enemy-tracker-chevron {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 0 8px rgba(255, 74, 74, 0.45));
+}
+
+.enemy-tracker-chevron span {
+  position: absolute;
+  top: 7px;
+  left: 2px;
+  width: 12px;
+  height: 2px;
+  background: #ff5b5b;
+  transform-origin: 100% 50%;
+}
+
+.enemy-tracker-chevron span:first-child {
+  transform: rotate(38deg);
+}
+
+.enemy-tracker-chevron span:last-child {
+  transform: rotate(-38deg);
+}
+
+.enemy-tracker-distance {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ff8383;
+  text-shadow: 0 0 8px rgba(255, 52, 52, 0.34);
+  white-space: nowrap;
+}
+
 .menu {
   position: absolute;
   inset: 0;

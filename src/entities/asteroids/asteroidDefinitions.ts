@@ -3,7 +3,7 @@ import type { AsteroidDefinition, AsteroidSize } from "../../types";
 export const ASTEROID_DEFINITIONS = {
   large: {
     mass: 4.2,
-    radius: 7.2,
+    radius: 6.6,
     maxHull: 40,
     minSpeed: 8,
     maxSpeed: 14,
@@ -12,7 +12,7 @@ export const ASTEROID_DEFINITIONS = {
   },
   small: {
     mass: 2.5,
-    radius: 4.4,
+    radius: 3.9,
     maxHull: 20,
     minSpeed: 11,
     maxSpeed: 19,
