@@ -95,6 +95,9 @@ export interface ShipMovementConfig {
   visualScale: number;
   turnRate: number;
   turnDamping: number;
+  yawInertiaFactor: number;
+  speedCapCurveExponent: number;
+  enginePowerMw?: number;
   muzzleOffsetForward: number;
   muzzleOffsetSide: number;
 }

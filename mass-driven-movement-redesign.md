@@ -8,11 +8,13 @@ Current state in `shipController.ts`:
 - `turnRate` adds angular velocity from heading error.
 - `turnDamping` exponentially damps angular velocity.
 - `mass` currently affects collisions, but not flight.
+- speed caps are currently enforced by hard clamping
 
 Recommended direction:
 - Treat `mass` as literal ship tons for design purposes.
-- Treat `thrust` values as **force-like gameplay units**, not acceleration.
+- Treat `thrust` values as force-like gameplay units, not acceleration.
 - Keep `maxSpeed` and `strafeMaxSpeed` as explicit designer caps.
+- Replace hard acceleration-into-cap with smooth thrust falloff near cap.
 - Replace massless turning with a simple inertia-based yaw controller.
 - Reserve an `enginePowerMw` hook now, but do not use it in movement yet.
 
@@ -26,13 +28,12 @@ Apply that on each driven axis:
 - reverse: `a_rev = reverseThrust / mass`
 - strafe: `a_strafe = strafeThrust / mass`
 
-Then integrate exactly as you do now:
+Then integrate as now:
 - `velocity += axisDirection * acceleration * delta`
-- keep `maxSpeed` / `strafeMaxSpeed` caps
 
 Important decision:
-- Do **not** multiply thrust by mass at runtime to “make it work.” That cancels the gameplay value of mass.
-- Instead, reinterpret ship `thrust` values as force-authority values and retune them per hull.
+- Do not multiply thrust by mass at runtime to preserve old feel automatically.
+- Reinterpret ship `thrust` values as force-authority values and retune them per hull.
 
 Example baseline:
 - current player thrust feel is about `20 u/s²`
@@ -41,11 +42,37 @@ Example baseline:
   - `reverseThrust = 480`
   - `strafeThrust = 360`
 
-So for a 30-ton starfighter:
-- same thrust authority as before: similar feel, but now mass scaling works across hulls
-- same thrust number as before: ship becomes dramatically slower, which is probably not desired
+### 2. Replace hard speed-clamp feel with thrust falloff near cap
+Do not add passive drag in the first pass.
 
-### 2. Rotation: use yaw inertia, not just raw turn acceleration
+Instead:
+- when a ship is thrusting in the same direction as its current axis velocity, reduce effective acceleration as that axis approaches its cap
+- when a ship is not thrusting, do not slow it down
+- when a ship is thrusting opposite its current velocity, do not attenuate braking thrust
+
+Use per-axis falloff:
+- `normalized = clamp(abs(axisSpeed) / maxAxisSpeed, 0, 1)`
+- `falloff = (1 - normalized) ^ capCurveExponent`
+- `effectiveAcceleration = baseAcceleration * falloff`
+
+Add one new config value:
+- `speedCapCurveExponent: number`
+  - default `1.5`
+  - shared across forward/reverse/strafe in the first pass
+
+Behavioral result:
+- acceleration starts strong
+- tapers smoothly near `maxSpeed`
+- ships asymptotically approach top speed instead of hitting a hard wall
+- coasting remains drag-free
+- reverse thrusters still provide deliberate braking in vacuum
+
+Keep a hard clamp only as a safety guard for:
+- collision overspeed correction when desired
+- afterburner edge cases
+- numeric spikes
+
+### 3. Rotation: use yaw inertia, not just raw turn acceleration
 Replace the current massless yaw update with a torque/inertia style PD controller:
 
 - `yawInertia = mass * radius^2 * yawInertiaFactor`
@@ -59,40 +86,33 @@ Interpretation:
 - `mass` and `radius` both reduce turn responsiveness
 - larger ships turn worse even at equal mass because inertia scales with `radius^2`
 
-This is the best grounded compromise for your current game:
-- more physical than the current controller
-- still stable and easy to tune
-- keeps `turnDamping` useful as a fly-by-wire / control-system stat
+Add:
+- `yawInertiaFactor: number`
+  - default `1.0`
 
-### 3. New/changed config and type surface
+### 4. New/changed config and type surface
 Keep existing fields, but change semantics:
 - `mass`: literal tons
-- `thrust`, `reverseThrust`, `strafeThrust`: force-like authority values, not acceleration
+- `thrust`, `reverseThrust`, `strafeThrust`: force-like authority values
 - `turnRate`: rotational control authority
 - `turnDamping`: angular damping coefficient
 
-Add one new ship stat:
+Add:
 - `yawInertiaFactor: number`
-  - default `1.0`
-  - used to differentiate compact vs spread-out ships of similar mass
+- `speedCapCurveExponent: number`
+- `enginePowerMw?: number` as a reserved future hook only
 
-Add one reserved hook, not used yet:
-- `enginePowerMw?: number`
-  - stored on ship configs/types only
-  - no runtime effect in this pass
+### 5. Power hook for later
+When engine power is introduced later, add it as a second limit layer, not as a replacement for thrust authority.
 
-### 4. Power hook for later
-When you decide to use engine power, add it as a second limit layer, not as a replacement for thrust authority.
-
-Later formula direction:
+Later direction:
 - low speed: thrust limited by static engine force
-- high speed: thrust limited by power, using `P = F * v`
+- high speed: thrust limited by power using `P = F * v`
 
-That means later you can do:
+That later allows:
 - `availableForce = min(staticThrust, powerLimitedForce)`
-- where `powerLimitedForce ≈ enginePower / speed`
 
-Do **not** introduce this in the first pass. It complicates tuning too early and behaves badly near zero speed unless carefully clamped.
+Do not implement this in the first pass.
 
 ## Tuning Defaults
 Choose these defaults for the first implementation:
@@ -114,18 +134,16 @@ Validate these scenarios:
 - A `30 t` player ship with retuned thrust preserves roughly current accel feel.
 - Doubling mass while keeping thrust constant halves linear acceleration.
 - Increasing radius while keeping mass constant reduces turning responsiveness.
-- A heavy ship reaches the same capped top speed eventually, but takes longer to get there.
+- A heavy ship reaches the same capped top speed eventually, but takes longer and with a smooth taper.
+- Coasting with no thrust does not bleed speed.
+- Reverse thrust near forward top speed still brakes strongly and does not feel atmospheric.
+- Strafe correction opposite current lateral motion remains responsive.
 - Collision behavior still works with the same `mass` values.
 - AI ships remain controllable under the new yaw controller and do not become oscillatory.
-
-Concrete tuning checks:
-- Compare `30 t` vs `60 t` ship with identical thrusters.
-- Compare two `30 t` ships with different radii.
-- Verify reverse and strafe feel proportionally weaker for heavier ships.
-- Verify player and hunter both still converge on target heading without wobble spikes.
 
 ## Assumptions
 - World units remain abstract; only `mass` is treated as literal tons in the design model.
 - `thrust` values are not Newtons; they are force-like gameplay units calibrated against tons and world-units-per-second.
-- `maxSpeed` remains a designer cap rather than emerging from drag/power.
+- `maxSpeed` remains a designer cap rather than emerging from drag or power.
+- No passive drag is introduced in the first pass.
 - `enginePowerMw` is added only as a future-facing hook and is not used in ship motion yet.

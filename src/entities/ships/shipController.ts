@@ -33,19 +33,27 @@ export function applyShipControl(
   const startingSpeed = ship.velocity.length();
 
   if (intent.forwardThrottle > 0) {
-    ship.velocity.addScaledVector(
+    applyAxisThrustToShip(
+      ship,
       forward,
-      config.thrust *
+      (config.thrust / config.mass) *
         THREE.MathUtils.clamp(intent.forwardThrottle, 0, 1) *
         forwardThrustMultiplier *
         delta,
+      activeSpeedCap,
+      config.speedCapCurveExponent,
     );
   }
 
   if (intent.reverseThrottle > 0) {
-    ship.velocity.addScaledVector(
+    applyAxisThrustToShip(
+      ship,
       forward,
-      -config.reverseThrust * THREE.MathUtils.clamp(intent.reverseThrottle, 0, 1) * delta,
+      -(config.reverseThrust / config.mass) *
+        THREE.MathUtils.clamp(intent.reverseThrottle, 0, 1) *
+        delta,
+      activeSpeedCap,
+      config.speedCapCurveExponent,
     );
   }
 
@@ -53,8 +61,9 @@ export function applyShipControl(
     applyAxisThrustToShip(
       ship,
       right,
-      config.strafeThrust * THREE.MathUtils.clamp(intent.strafe, -1, 1) * delta,
+      (config.strafeThrust / config.mass) * THREE.MathUtils.clamp(intent.strafe, -1, 1) * delta,
       config.strafeMaxSpeed,
+      config.speedCapCurveExponent,
     );
   }
 
@@ -68,8 +77,12 @@ export function applyShipControl(
 
   if (intent.targetYaw !== null) {
     const difference = wrapAngle(intent.targetYaw - ship.yaw);
-    ship.yawVelocity += difference * config.turnRate * delta;
-    ship.yawVelocity *= Math.exp(-config.turnDamping * delta);
+    const yawInertia = Math.max(
+      config.mass * config.radius * config.radius * config.yawInertiaFactor,
+      0.0001,
+    );
+    const yawAcceleration = (difference * config.turnRate - config.turnDamping * ship.yawVelocity) / yawInertia;
+    ship.yawVelocity += yawAcceleration * delta;
     ship.yaw += ship.yawVelocity * delta;
     ship.mesh.rotation.y = ship.yaw;
   }
@@ -80,6 +93,7 @@ export function applyAxisThrustToShip(
   axis: THREE.Vector3,
   deltaSpeed: number,
   maxAxisSpeed: number,
+  speedCapCurveExponent: number,
 ): void {
   if (deltaSpeed === 0) {
     return;
@@ -89,14 +103,24 @@ export function applyAxisThrustToShip(
   const thrustSign = Math.sign(deltaSpeed);
   const axisSign = Math.sign(axisSpeed);
 
-  if (axisSign !== 0 && axisSign === thrustSign && Math.abs(axisSpeed) >= maxAxisSpeed) {
+  let appliedDelta = deltaSpeed;
+
+  if (maxAxisSpeed > 0 && axisSign !== 0 && axisSign === thrustSign) {
+    const normalized = THREE.MathUtils.clamp(Math.abs(axisSpeed) / maxAxisSpeed, 0, 1);
+    const falloff = Math.pow(1 - normalized, speedCapCurveExponent);
+    appliedDelta *= falloff;
+  }
+
+  if (appliedDelta === 0) {
     return;
   }
 
-  let appliedDelta = deltaSpeed;
-  if (axisSign === thrustSign || axisSign === 0) {
-    const remainingSpeed = maxAxisSpeed - Math.abs(axisSpeed);
-    appliedDelta = thrustSign * Math.min(Math.abs(deltaSpeed), Math.max(remainingSpeed, 0));
+  if (maxAxisSpeed > 0 && axisSign === thrustSign) {
+    const nextAxisSpeed = axisSpeed + appliedDelta;
+    if (Math.abs(nextAxisSpeed) > maxAxisSpeed) {
+      const remainingSpeed = Math.max(maxAxisSpeed - Math.abs(axisSpeed), 0);
+      appliedDelta = thrustSign * Math.min(Math.abs(appliedDelta), remainingSpeed);
+    }
   }
 
   ship.velocity.addScaledVector(axis, appliedDelta);
