@@ -31,11 +31,11 @@ export const WEAPON_DEFINITIONS = {
     shotsPerSecond: 1.15,
     speed: 60,
     lifetimeSeconds: 2.2,
-    damage: 20,
+    damage: 20.5,
     radius: 2.15,
     mass: 0.18,
     visualLength: 3.2,
-    visualWidth: 0.9,
+    visualWidth: 1.3,
   },
   plasmaOrb: {
     name: "plasmaOrb",

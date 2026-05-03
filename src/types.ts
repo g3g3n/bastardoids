@@ -13,7 +13,16 @@ import type {
 
 export type AsteroidSize = "large" | "small";
 export type ThrusterName = "forward" | "reverse" | "left" | "right";
-export type ShipModelName = "ship1" | "ship2" | "ship3" | "ship4";
+export type ShipModelName =
+  | "ship1"
+  | "ship2"
+  | "ship3"
+  | "ship4"
+  | "ship5"
+  | "ship6"
+  | "ship7"
+  | "ship8"
+  | "ship9";
 export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
 export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
 export type SoundEffectName =
@@ -75,6 +84,7 @@ export interface ShipMovementConfig {
   mass: number;
   radius: number;
   vent: number;
+  thermalCap: number;
   thrust: number;
   reverseThrust: number;
   strafeThrust: number;
@@ -160,6 +170,7 @@ export interface AfterburnerConfig {
 export interface AsteroidDefinition {
   mass: number;
   radius: number;
+  visualScale: number;
   maxHull: number;
   minSpeed: number;
   maxSpeed: number;
@@ -195,6 +206,7 @@ export interface ShipStateBase {
   mass: number;
   radius: number;
   vent: number;
+  thermalCap: number;
   heat: number;
   maxHull: number;
   hull: number;

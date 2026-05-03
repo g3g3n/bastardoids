@@ -38,8 +38,6 @@ import { WorldScenery } from "./visuals/WorldScenery";
 const config = loadGameConfig();
 const STORAGE_KEY = "bastardoids-highscore";
 const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
-const HEAT_SOFT_CAP = 100;
-const HEAT_MAX = 150;
 const OVERHEATED_VENT_MULTIPLIER = 0.65;
 const SMALL_ASTEROID_COLLISION_DAMAGE = 20;
 const LARGE_ASTEROID_COLLISION_DAMAGE = 30;
@@ -440,7 +438,10 @@ class BastardoidsApp {
     velocity: THREE.Vector3,
   ): AsteroidEntity {
     const asteroidCfg = getAsteroidDefinition(size);
-    const geometry = this.buildAsteroidGeometry(size === "large" ? 18 : 13, asteroidCfg.radius);
+    const geometry = this.buildAsteroidGeometry(
+      size === "large" ? 18 : 13,
+      asteroidCfg.radius * asteroidCfg.visualScale,
+    );
     const material = new THREE.LineBasicMaterial({
       color: size === "large" ? 0xaed4ff : 0x7ab4ff,
     });
@@ -565,7 +566,7 @@ class BastardoidsApp {
       return false;
     }
 
-    ship.heat = Math.min(HEAT_MAX, ship.heat + weaponDefinition.heat);
+    ship.heat = Math.min(ship.thermalCap, ship.heat + weaponDefinition.heat);
     if (weaponDefinition.fireSound) {
       this.audioSystem.playSfx(weaponDefinition.fireSound, {
         volume: ship.faction === "enemy" ? 0.4 : 0.65,
@@ -1200,7 +1201,8 @@ class BastardoidsApp {
     });
     this.ui.updateHeat({
       current: this.player?.heat ?? 0,
-      max: HEAT_MAX,
+      softCap: this.player ? this.getShipHeatSoftCap(this.player) : this.getConfigHeatSoftCap(),
+      max: this.player?.thermalCap ?? this.playerConfig.thermalCap,
     });
   }
 
@@ -1373,7 +1375,7 @@ class BastardoidsApp {
     ship: ShipEntity,
     weaponDefinition: ReturnType<typeof getWeaponDefinition>,
   ): boolean {
-    return ship.heat + weaponDefinition.heat <= HEAT_MAX;
+    return ship.heat + weaponDefinition.heat <= ship.thermalCap;
   }
 
   updateShipHeat(delta: number): void {
@@ -1405,8 +1407,17 @@ class BastardoidsApp {
   }
 
   ventShipHeat(ship: ShipEntity, delta: number): void {
-    const ventMultiplier = ship.heat > HEAT_SOFT_CAP ? OVERHEATED_VENT_MULTIPLIER : 1;
+    const softCap = this.getShipHeatSoftCap(ship);
+    const ventMultiplier = ship.heat >= softCap ? OVERHEATED_VENT_MULTIPLIER : 1;
     ship.heat = Math.max(0, ship.heat - ship.vent * ventMultiplier * delta);
+  }
+
+  getShipHeatSoftCap(ship: Pick<ShipEntity, "thermalCap">): number {
+    return Math.floor(ship.thermalCap * 2 / 3);
+  }
+
+  getConfigHeatSoftCap(): number {
+    return Math.floor(this.playerConfig.thermalCap * 2 / 3);
   }
 
   regenerateShield(entity: DamageableEntity, delta: number): void {

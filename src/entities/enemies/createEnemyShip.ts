@@ -94,6 +94,7 @@ export function createEnemyShip(
     mass: definition.mass,
     radius: definition.radius,
     vent: definition.vent,
+    thermalCap: definition.thermalCap,
     heat: 0,
     maxHull: definition.maxHull,
     hull: definition.maxHull,

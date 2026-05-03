@@ -30,6 +30,7 @@ export interface AfterburnerSnapshot {
 
 export interface HeatSnapshot {
   current: number;
+  softCap: number;
   max: number;
 }
 
@@ -47,6 +48,10 @@ export class GameUi {
   heatGauge: HTMLDivElement;
   heatFill: HTMLDivElement;
   heatLabel: HTMLSpanElement;
+  heatSoftCapMarker: HTMLDivElement;
+  heatSoftCapLabel: HTMLSpanElement;
+  heatMaxMarker: HTMLDivElement;
+  heatMaxLabel: HTMLSpanElement;
   shipStatus: HTMLDivElement;
   shipShieldFill: HTMLDivElement;
   shipShieldLabel: HTMLSpanElement;
@@ -78,15 +83,15 @@ export class GameUi {
     this.heatGauge.innerHTML = `
       <div class="heat-label-row">
         <span class="heat-name">Heat</span>
-        <span class="heat-value">0 / 150</span>
+        <span class="heat-value">0 / 0</span>
       </div>
       <div class="heat-track">
         <div class="heat-fill"></div>
         <div class="heat-marker heat-marker-100">
-          <span>100</span>
+          <span>0</span>
         </div>
         <div class="heat-marker heat-marker-150">
-          <span>150</span>
+          <span>0</span>
         </div>
       </div>
     `;
@@ -97,6 +102,22 @@ export class GameUi {
     this.heatLabel = requireElement(
       this.heatGauge.querySelector<HTMLSpanElement>(".heat-value"),
       "Heat value element not found.",
+    );
+    this.heatSoftCapMarker = requireElement(
+      this.heatGauge.querySelector<HTMLDivElement>(".heat-marker-100"),
+      "Heat soft-cap marker element not found.",
+    );
+    this.heatSoftCapLabel = requireElement(
+      this.heatSoftCapMarker.querySelector<HTMLSpanElement>("span"),
+      "Heat soft-cap marker label element not found.",
+    );
+    this.heatMaxMarker = requireElement(
+      this.heatGauge.querySelector<HTMLDivElement>(".heat-marker-150"),
+      "Heat max marker element not found.",
+    );
+    this.heatMaxLabel = requireElement(
+      this.heatMaxMarker.querySelector<HTMLSpanElement>("span"),
+      "Heat max marker label element not found.",
     );
     this.root.append(this.heatGauge);
 
@@ -281,9 +302,14 @@ export class GameUi {
   updateHeat(snapshot: HeatSnapshot): void {
     const clampedCurrent = Math.max(0, Math.min(snapshot.current, snapshot.max));
     const percent = snapshot.max > 0 ? (clampedCurrent / snapshot.max) * 100 : 0;
+    const softCapPercent = snapshot.max > 0 ? (snapshot.softCap / snapshot.max) * 100 : 0;
     this.heatFill.style.width = `${percent}%`;
     this.heatFill.style.background = this.getHeatColor(clampedCurrent, snapshot.max);
     this.heatLabel.textContent = `${Math.round(clampedCurrent)} / ${snapshot.max}`;
+    this.heatSoftCapMarker.style.left = `${softCapPercent}%`;
+    this.heatSoftCapLabel.textContent = `${snapshot.softCap}`;
+    this.heatMaxMarker.style.left = "100%";
+    this.heatMaxLabel.textContent = `${snapshot.max}`;
   }
 
   setCrosshairClientPosition(x: number, y: number): void {

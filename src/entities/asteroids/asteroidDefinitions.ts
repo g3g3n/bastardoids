@@ -4,6 +4,7 @@ export const ASTEROID_DEFINITIONS = {
   large: {
     mass: 4.2,
     radius: 6.6,
+    visualScale: 1.25,
     maxHull: 40,
     minSpeed: 8,
     maxSpeed: 14,
@@ -13,6 +14,7 @@ export const ASTEROID_DEFINITIONS = {
   small: {
     mass: 2.5,
     radius: 3.9,
+    visualScale: 1.20,
     maxHull: 20,
     minSpeed: 11,
     maxSpeed: 19,

@@ -35,6 +35,7 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
     mass: playerConfig.mass,
     radius: playerConfig.radius,
     vent: playerConfig.vent,
+    thermalCap: playerConfig.thermalCap,
     heat: 0,
     maxHull: playerConfig.hull,
     hull: playerConfig.hull,
