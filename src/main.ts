@@ -25,6 +25,7 @@ import { getAsteroidDefinition } from "./entities/asteroids/asteroidDefinitions"
 import { createEnemyShip } from "./entities/enemies/createEnemyShip";
 import { getEnemyShipDefinition } from "./entities/enemies/enemyDefinitions";
 import { getWeaponDefinition } from "./entities/projectiles/weaponDefinitions";
+import { getPrimaryFireWeapon } from "./entities/ships/loadout";
 import { applyShipControl, getShipBasis, wrapAngle } from "./entities/ships/shipController";
 import { PerformanceMonitor } from "./PerformanceMonitor";
 import { createPlayer } from "./player/createPlayer";
@@ -40,7 +41,7 @@ const STORAGE_KEY = "bastardoids-highscore";
 const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
 const OVERHEATED_VENT_MULTIPLIER = 0.65;
 const SMALL_ASTEROID_COLLISION_DAMAGE = 20;
-const LARGE_ASTEROID_COLLISION_DAMAGE = 30;
+const MEDIUM_ASTEROID_COLLISION_DAMAGE = 30;
 const PLAYER_THRUSTER_LOOP_ID = "player-thrusters";
 const PLAYER_AFTERBURNER_LOOP_ID = "player-afterburner";
 const ENEMY_THRUSTER_LOOP_ID_PREFIX = "enemy-thrusters-";
@@ -87,7 +88,6 @@ class BastardoidsApp {
   showCollisionRings = config.showCollisionRings;
   performanceMonitor = new PerformanceMonitor();
   playerConfig = config.player;
-  playerWeaponConfig = getWeaponDefinition(this.playerConfig.primaryWeapon);
   spawnConfig = config.spawning;
   physicsConfig = config.physics;
   thrusterConfig = config.thrusters;
@@ -439,11 +439,11 @@ class BastardoidsApp {
   ): AsteroidEntity {
     const asteroidCfg = getAsteroidDefinition(size);
     const geometry = this.buildAsteroidGeometry(
-      size === "large" ? 18 : 13,
+      size === "medium" ? 18 : 13,
       asteroidCfg.radius * asteroidCfg.visualScale,
     );
     const material = new THREE.LineBasicMaterial({
-      color: size === "large" ? 0xaed4ff : 0x7ab4ff,
+      color: size === "medium" ? 0xaed4ff : 0x7ab4ff,
     });
     const mesh = new THREE.LineSegments(geometry, material);
     mesh.position.copy(position);
@@ -495,7 +495,7 @@ class BastardoidsApp {
       ownerId,
       weapon: weaponDefinition.name,
       faction,
-      mass: weaponDefinition.mass,
+      mass: weaponDefinition.projectileMass,
       damage: weaponDefinition.damage,
       radius: weaponDefinition.radius,
       mesh,
@@ -543,7 +543,13 @@ class BastardoidsApp {
       return;
     }
 
-    const minDelay = 1 / this.playerWeaponConfig.shotsPerSecond;
+    const playerWeaponName = getPrimaryFireWeapon(this.playerConfig);
+    if (!playerWeaponName) {
+      return;
+    }
+
+    const playerWeaponConfig = getWeaponDefinition(playerWeaponName);
+    const minDelay = 1 / playerWeaponConfig.shotsPerSecond;
     if (this.elapsed - this.lastShotAt < minDelay) {
       return;
     }
@@ -556,12 +562,17 @@ class BastardoidsApp {
   fireShipPrimaryWeapon(
     ship: PlayerState | EnemyShipEntity,
     shipConfig: {
-      primaryWeapon: ProjectileEntity["weapon"];
+      weapon1: ProjectileEntity["weapon"] | null;
       muzzleOffsetForward: number;
       muzzleOffsetSide: number;
     },
   ): boolean {
-    const weaponDefinition = getWeaponDefinition(shipConfig.primaryWeapon);
+    const weaponName = getPrimaryFireWeapon(shipConfig);
+    if (!weaponName) {
+      return false;
+    }
+
+    const weaponDefinition = getWeaponDefinition(weaponName);
     if (!this.canShipFireWeapon(ship, weaponDefinition)) {
       return false;
     }
@@ -751,7 +762,11 @@ class BastardoidsApp {
       if (intent.firePrimary) {
         const fired = this.fireShipPrimaryWeapon(enemy, enemy.definition);
         if (fired) {
-          const weaponDefinition = getWeaponDefinition(enemy.definition.primaryWeapon);
+          const weaponName = getPrimaryFireWeapon(enemy.definition);
+          if (!weaponName) {
+            continue;
+          }
+          const weaponDefinition = getWeaponDefinition(weaponName);
           enemy.blackboard.nextFireAt = this.elapsed + 1 / weaponDefinition.shotsPerSecond;
         }
       }
@@ -959,7 +974,7 @@ class BastardoidsApp {
     const damage =
       asteroid.size === "small"
         ? SMALL_ASTEROID_COLLISION_DAMAGE
-        : LARGE_ASTEROID_COLLISION_DAMAGE;
+        : MEDIUM_ASTEROID_COLLISION_DAMAGE;
     this.applyDamageToEntity(ship, damage);
   }
 
@@ -1128,7 +1143,7 @@ class BastardoidsApp {
       spawnPosition.addScaledVector(cameraRight, -spawnBounds.halfWidth);
     }
 
-    const size = Math.random() < 0.45 ? "large" : "small";
+    const size = Math.random() < 0.45 ? "medium" : "small";
     const asteroidCfg = getAsteroidDefinition(size);
     const toCenter = center.clone().sub(spawnPosition).setY(0).normalize();
     const angleOffset = (Math.random() - 0.5) * (Math.PI / 2.2);

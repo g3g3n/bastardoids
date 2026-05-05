@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { getWeaponDefinition } from "../entities/projectiles/weaponDefinitions";
+import { getPrimaryFireWeapon } from "../entities/ships/loadout";
 import { getShipBasis, wrapAngle } from "../entities/ships/shipController";
 import type {
   AsteroidEntity,
@@ -211,7 +212,7 @@ function chooseEmergencyTactic(
   }
 
   const objectCollisionThreat =
-    perception.timeToCollisionAsteroid < 1.5 ||
+    perception.timeToCollisionAsteroid < 1.7 ||
     perception.nearestEnemySeparationDistance < enemy.radius * 3.25;
   if (objectCollisionThreat) {
     return "evadeObjectCollision";
@@ -349,9 +350,10 @@ function buildEnemyControlIntent(
   const desiredDirection =
     desiredMovement.lengthSq() > 0.0001 ? desiredMovement.normalize() : new THREE.Vector3();
 
-  const weapon = getWeaponDefinition(enemy.definition.primaryWeapon);
+  const weaponName = getPrimaryFireWeapon(enemy.definition);
+  const weapon = weaponName ? getWeaponDefinition(weaponName) : null;
   const aimPoint =
-    enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius
+    weapon !== null && enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius
       ? (() => {
           const fullLeadPoint =
             solveInterceptPoint(
@@ -378,6 +380,7 @@ function buildEnemyControlIntent(
   const targetYaw = Math.atan2(aimPoint.x - enemy.position.x, aimPoint.z - enemy.position.z);
   const yawError = Math.abs(wrapAngle(targetYaw - enemy.yaw));
   const canFire =
+    weapon !== null &&
     context.elapsed >= enemy.blackboard.nextFireAt &&
     enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius &&
     yawError <= THREE.MathUtils.degToRad(enemy.definition.aimToleranceDegrees) &&
@@ -405,7 +408,7 @@ function buildEnemyControlIntent(
     reverseThrottle,
     strafe,
     useAfterburner: false,
-    firePrimary: canFire && weapon.shotsPerSecond > 0,
+    firePrimary: canFire && weapon !== null && weapon.shotsPerSecond > 0,
   };
 }
 
@@ -429,7 +432,7 @@ function getBaseTacticMovement(
   const desired = new THREE.Vector3();
 
   if (tactic === "closeToRange") {
-    desired.copy(radialToPlayer).multiplyScalar(1.15).addScaledVector(tangent, 0.01);
+    desired.copy(radialToPlayer).multiplyScalar(1.25).addScaledVector(tangent, 0.01);
   } else if (tactic === "holdRange") {
     desired
       .copy(tangent)

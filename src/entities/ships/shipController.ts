@@ -36,7 +36,7 @@ export function applyShipControl(
     applyAxisThrustToShip(
       ship,
       forward,
-      (config.thrust / config.mass) *
+      (config.thrust / ship.mass) *
         THREE.MathUtils.clamp(intent.forwardThrottle, 0, 1) *
         forwardThrustMultiplier *
         delta,
@@ -49,7 +49,7 @@ export function applyShipControl(
     applyAxisThrustToShip(
       ship,
       forward,
-      -(config.reverseThrust / config.mass) *
+      -(config.reverseThrust / ship.mass) *
         THREE.MathUtils.clamp(intent.reverseThrottle, 0, 1) *
         delta,
       activeSpeedCap,
@@ -61,7 +61,7 @@ export function applyShipControl(
     applyAxisThrustToShip(
       ship,
       right,
-      (config.strafeThrust / config.mass) * THREE.MathUtils.clamp(intent.strafe, -1, 1) * delta,
+      (config.strafeThrust / ship.mass) * THREE.MathUtils.clamp(intent.strafe, -1, 1) * delta,
       config.strafeMaxSpeed,
       config.speedCapCurveExponent,
     );
@@ -78,7 +78,7 @@ export function applyShipControl(
   if (intent.targetYaw !== null) {
     const difference = wrapAngle(intent.targetYaw - ship.yaw);
     const yawInertia = Math.max(
-      config.mass * config.radius * config.radius * config.yawInertiaFactor,
+      ship.mass * ship.radius * ship.radius * config.yawInertiaFactor,
       0.0001,
     );
     const yawAcceleration = (difference * config.turnRate - config.turnDamping * ship.yawVelocity) / yawInertia;

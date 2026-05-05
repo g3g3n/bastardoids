@@ -7,6 +7,7 @@ import type {
   ShipThrusterRuntime,
   ShipLines,
 } from "../../types";
+import { getTotalShipMass } from "../ships/loadout";
 import { createShipVisual } from "../../visuals/createShipVisual";
 
 export interface CreatedEnemyShip {
@@ -91,7 +92,7 @@ export function createEnemyShip(
     type: "enemyShip",
     faction: "enemy",
     name: definition.name,
-    mass: definition.mass,
+    mass: getTotalShipMass(definition),
     radius: definition.radius,
     vent: definition.vent,
     thermalCap: definition.thermalCap,

@@ -1,6 +1,6 @@
 {
   "debugMode": true,
-  "showCollisionRings": true,
+  "showCollisionRings": false,
   "world": {
     "asteroidDistanceScreens": 5.0,
     "asteroidDespawnDistanceScreens": 7.0,
@@ -26,7 +26,7 @@
     "backgroundStarSize": 0.6
   },
   "player": {
-    "mass": 30,
+    "hullMass": 28.5,
     "hull": 40,
     "shield": 40,
     "shieldRegen": 15,
@@ -39,8 +39,8 @@
     "strafeThrust": 360,
     "maxSpeed": 32,
     "strafeMaxSpeed": 14,
-    "shipModel": "ship1",
-    "primaryWeapon": "laser",
+    "shipModel": "ship6",
+    "weapon1": "laser",
     "visualScale": 1.65,
     "turnRate": 2855.25,
     "turnDamping": 1215,

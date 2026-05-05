@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { PlayerConfig, PlayerLines, PlayerShield, PlayerState } from "../types";
+import { getTotalShipMass } from "../entities/ships/loadout";
 import { createShipVisual } from "../visuals/createShipVisual";
 
 export interface CreatedPlayer {
@@ -32,7 +33,7 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
     id: nextId,
     type: "player",
     faction: "player",
-    mass: playerConfig.mass,
+    mass: getTotalShipMass(playerConfig),
     radius: playerConfig.radius,
     vent: playerConfig.vent,
     thermalCap: playerConfig.thermalCap,

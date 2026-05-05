@@ -3,7 +3,7 @@ import type { EnemyShipDefinition, EnemyShipName } from "../../types";
 export const ENEMY_SHIP_DEFINITIONS = {
   hunter: {
     name: "hunter",
-    mass: 45,
+    hullMass: 25,
     maxHull: 80,
     shield: 0,
     shieldRegen: 0,
@@ -17,7 +17,7 @@ export const ENEMY_SHIP_DEFINITIONS = {
     maxSpeed: 28,
     strafeMaxSpeed: 14,
     shipModel: "ship5",
-    primaryWeapon: "kineticTorpedo",
+    weapon1: "kineticTorpedo",
     visualScale: 1.73,
     turnRate: 3313.98,
     turnDamping: 2436.75,

@@ -11,7 +11,7 @@ import type {
   Vector3,
 } from "three";
 
-export type AsteroidSize = "large" | "small";
+export type AsteroidSize = "medium" | "small";
 export type ThrusterName = "forward" | "reverse" | "left" | "right";
 export type ShipModelName =
   | "ship1"
@@ -81,7 +81,7 @@ export interface WorldConfig {
 }
 
 export interface ShipMovementConfig {
-  mass: number;
+  hullMass: number;
   radius: number;
   vent: number;
   thermalCap: number;
@@ -91,7 +91,7 @@ export interface ShipMovementConfig {
   maxSpeed: number;
   strafeMaxSpeed: number;
   shipModel: ShipModelName;
-  primaryWeapon: WeaponName;
+  weapon1: WeaponName | null;
   visualScale: number;
   turnRate: number;
   turnDamping: number;
@@ -125,6 +125,7 @@ export interface WeaponDefinition {
   damage: number;
   radius: number;
   mass: number;
+  projectileMass: number;
   visualLength: number;
   visualWidth: number;
 }

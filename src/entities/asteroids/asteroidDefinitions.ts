@@ -1,7 +1,7 @@
 import type { AsteroidDefinition, AsteroidSize } from "../../types";
 
 export const ASTEROID_DEFINITIONS = {
-  large: {
+  medium: {
     mass: 90,
     radius: 6.6,
     visualScale: 1.25,
