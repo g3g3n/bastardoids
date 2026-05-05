@@ -1,11 +1,11 @@
 # EnemyShip AI Architecture for Bastardoids
 
 ## Summary
-Use a **utility + steering hybrid** for `enemyShip`, optimized for **10+ simultaneous enemies**. This is the best fit for your current arcade flight model because it separates:
+Use a **utility + steering hybrid** for `enemyShip`, optimized for **10+ simultaneous enemies**. This is the best fit for our current flight model because it separates:
 - **Decision making**: choose what matters most right now using weighted scores.
 - **Movement**: convert that decision into the same thrust/strafe/turn style controls the player uses.
 
-This avoids FSM state explosion once you add “keep distance,” “shoot,” “avoid asteroid,” “avoid projectile,” and “get behind player.” Compared with alternatives:
+This avoids FSM state explosion once we add “keep distance,” “shoot,” “avoid asteroid,” “avoid projectile,” and “get behind player.” Compared with alternatives:
 - **FSM only**: fastest to start, but brittle once behaviors overlap.
 - **Behavior tree + steering**: readable, but weighted tradeoffs are more awkward.
 - **GOAP**: powerful, but unnecessary until enemies need richer world interactions like cover, pickups, or multi-step plans.
@@ -23,7 +23,7 @@ Implementation choice:
 - Shared locomotion applies thrust, strafe, turn damping, speed caps, and afterburner exactly once for both player and enemies.
 
 Why:
-- Your current player movement in `main.ts` already behaves like a simple vehicle controller.
+- Currently the player movement in `main.ts` already behaves like a simple vehicle controller.
 - Reynolds’ steering model explicitly separates **goal/steering** from **locomotion**, which matches this refactor well.
 
 ### 2. Add enemy entity and data model
@@ -78,7 +78,7 @@ Perception snapshot should cache:
 - nearest enemy separation pressure
 - time-to-collision estimates
 
-For current repo scale, start with simple loops over entities. Wrap those in query helpers so spatial hashing/grid partitioning can be added later without rewriting AI logic.
+For our current repo scale, we'll start with simple loops over entities. Wrap those in query helpers so spatial hashing/grid partitioning can be added later without rewriting AI logic.
 
 #### Utility layer
 Score a small set of tactics each decision tick. Recommended starting tactics:
@@ -153,7 +153,7 @@ Firing gate for v1:
 - line of fire not immediately blocked by a nearby asteroid if that check is cheap enough
 
 Use **predictive aiming** by default:
-- solve simple lead based on player position, player velocity, and projectile speed
+- solve simple lead based on player position, player velocity, shooter position, shooter velocity and projectile speed
 - fall back to direct aim if intercept solution is unstable
 
 ### 5. Add safety and swarm scalability from the start
