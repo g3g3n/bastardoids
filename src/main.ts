@@ -4,17 +4,16 @@ import type {
   AsteroidSize,
   CollisionBody,
   DamageableEntity,
+  EnemyShipName,
   EnemyShipEntity,
   PlayerLines,
-  ProjectileEntity,
   PlayerShield,
   PlayerState,
+  PlayerVentEffect,
   ReferenceGridBounds,
   ShipControlIntent,
   ShipEntity,
-  ThrusterEmitter,
   ThrusterName,
-  ThrusterParticle,
   ThrusterStateMap,
 } from "./types";
 import { updateEnemyAi } from "./ai/enemyShipAi";
@@ -26,18 +25,43 @@ import { createEnemyShip } from "./entities/enemies/createEnemyShip";
 import { getEnemyShipDefinition } from "./entities/enemies/enemyDefinitions";
 import { getWeaponDefinition } from "./entities/projectiles/weaponDefinitions";
 import { getPrimaryFireWeapon } from "./entities/ships/loadout";
-import { applyShipControl, getShipBasis, wrapAngle } from "./entities/ships/shipController";
+import { applyShipControl } from "./entities/ships/shipController";
 import { PerformanceMonitor } from "./PerformanceMonitor";
 import { createPlayer } from "./player/createPlayer";
+import { getPlayerSkillDefinition } from "./player/progression/skills";
+import {
+  activateBoundActiveSkill,
+  applyLevelUpOffer,
+  createPlayerProgressionState,
+  generateLevelUpOffers,
+  getNextPendingLevel,
+  hasPendingLevelUp,
+  loadHighestXp,
+  queueProgressionRewards,
+  storeHighestXp,
+  syncExpiredActiveSkills,
+} from "./player/progression/progression";
+import { resolvePlayerStats } from "./player/progression/resolvePlayerStats";
+import { getLevelForXp, getXpProgressForLevel } from "./player/progression/xpTable";
+import type {
+  ActiveSkillKey,
+  PlayerProgressionState,
+  ResolvedPlayerStats,
+} from "./player/progression/types";
+import { CombatSystem } from "./systems/CombatSystem";
+import { SpawnDirector } from "./systems/SpawnDirector";
 import { GameUi } from "./ui/GameUi";
 import { BackgroundStars } from "./visuals/BackgroundStars";
+import {
+  hideEmergencyVentEffect,
+  updateEmergencyVentEffectVisual,
+} from "./visuals/EmergencyVentEffect";
 import { ExplosionSystem } from "./visuals/ExplosionSystem";
 import { ReferenceGrid } from "./visuals/ReferenceGrid";
-import { createWeaponProjectileMesh } from "./visuals/Weapons";
+import { ThrusterParticleSystem } from "./visuals/ThrusterParticleSystem";
 import { WorldScenery } from "./visuals/WorldScenery";
 
 const config = loadGameConfig();
-const STORAGE_KEY = "bastardoids-highscore";
 const THRUSTER_NAMES: ThrusterName[] = ["forward", "reverse", "left", "right"];
 const OVERHEATED_VENT_MULTIPLIER = 0.65;
 const SMALL_ASTEROID_COLLISION_DAMAGE = 20;
@@ -57,6 +81,11 @@ const ENEMY_TRACK_EDGE_NDC_X = 0.92;
 const ENEMY_TRACK_EDGE_NDC_Y = 0.82;
 const COLLISION_RING_COLOR = 0x3dff79;
 const COLLISION_RING_Y_OFFSET = 0.12;
+const ACTIVE_SKILL_KEYS = new Set<ActiveSkillKey>(["KeyQ", "KeyE", "KeyR", "KeyF", "KeyV"]);
+const PLAYER_ENEMY_PROXIMITY_XP_RADIUS = 300;
+const LEVEL_UP_PAUSE_DELAY_SECONDS = 1.2;
+
+type GamePhase = "menu" | "playing" | "levelUp" | "gameOver";
 
 class BastardoidsApp {
   scene = new THREE.Scene();
@@ -77,7 +106,6 @@ class BastardoidsApp {
   primaryMouseDown = false;
   asteroids = new Map<number, AsteroidEntity>();
   enemies = new Map<number, EnemyShipEntity>();
-  projectiles = new Map<number, ProjectileEntity>();
   referenceGrid = new ReferenceGrid(config.world);
   backgroundStars = new BackgroundStars(config.world);
   worldScenery = new WorldScenery();
@@ -86,28 +114,16 @@ class BastardoidsApp {
   world = config.world;
   debugMode = config.debugMode;
   showCollisionRings = config.showCollisionRings;
+  showEmergencyVentEffect = config.showEmergencyVentEffect;
   performanceMonitor = new PerformanceMonitor();
   playerConfig = config.player;
   spawnConfig = config.spawning;
   physicsConfig = config.physics;
   thrusterConfig = config.thrusters;
   afterburnerConfig = config.afterburner;
-  thrusterPoints: THREE.Points<THREE.BufferGeometry, THREE.PointsMaterial> | null = null;
-  thrusterParticlePool: ThrusterParticle[] = [];
-  thrusterParticlePositions: Float32Array | null = null;
-  thrusterParticleColors: Float32Array | null = null;
-  thrusterEmissionCarry: ThrusterStateMap<number> = {
-    forward: 0,
-    reverse: 0,
-    left: 0,
-    right: 0,
-  };
-  thrusterHoldTime: ThrusterStateMap<number> = {
-    forward: 0,
-    reverse: 0,
-    left: 0,
-    right: 0,
-  };
+  combat!: CombatSystem;
+  spawnDirector!: SpawnDirector;
+  thrusterParticles!: ThrusterParticleSystem;
   thrusterInputState: ThrusterStateMap<boolean> = {
     forward: false,
     reverse: false,
@@ -117,6 +133,7 @@ class BastardoidsApp {
   player: PlayerState | null = null;
   playerLines: PlayerLines | null = null;
   playerShield: PlayerShield | null = null;
+  playerVentEffect: PlayerVentEffect | null = null;
   enemyShields = new Map<number, PlayerShield>();
   collisionRingRoot = new THREE.Group();
   collisionRingGeometry = this.buildCollisionRingGeometry();
@@ -129,17 +146,21 @@ class BastardoidsApp {
   });
   collisionRings = new Map<number, THREE.LineLoop>();
   nextId = 1;
-  score = 0;
-  highScore = this.loadHighScore();
-  lastShotAt = -Infinity;
-  spawnCooldown = 0;
+  phase: GamePhase = "menu";
+  highestXp = loadHighestXp();
+  progression: PlayerProgressionState = createPlayerProgressionState();
+  resolvedPlayerStats: ResolvedPlayerStats = resolvePlayerStats(
+    this.playerConfig,
+    this.progression,
+    0,
+  );
   elapsed = 0;
-  running = false;
   afterburnerCharge = this.afterburnerConfig.maxDurationSeconds;
   afterburnerActive = false;
   afterburnerShiftHeld = false;
   afterburnerEffectTime = 0;
   currentSpeedCap = this.playerConfig.maxSpeed;
+  levelUpPauseAt: number | null = null;
 
   constructor(container: HTMLElement) {
     this.ui = new GameUi(container);
@@ -154,6 +175,26 @@ class BastardoidsApp {
     this.scene.background = new THREE.Color(0x02050c);
 
     this.setupScene();
+    this.combat = new CombatSystem(this.audioSystem, {
+      allocateId: () => this.nextId++,
+      addObjectToScene: (object) => this.scene.add(object),
+      removeObjectFromScene: (object) => this.scene.remove(object),
+      attachCollisionRing: (entity) => this.attachCollisionRing(entity),
+      removeCollisionRing: (entityId) => this.removeCollisionRing(entityId),
+      grantPlayerRewards: (xpReward, scrapReward) => this.grantPlayerRewards(xpReward, scrapReward),
+      splitLargeAsteroid: (asteroid) => this.splitLargeAsteroid(asteroid),
+      destroyAsteroid: (asteroid, emitExplosion) => this.destroyAsteroid(asteroid, emitExplosion),
+      destroyEnemy: (enemy, emitExplosion) => this.destroyEnemy(enemy, emitExplosion),
+      destroyPlayerRun: () => {
+        this.destroyPlayer();
+        this.gameOver();
+      },
+      isEnemyWithinPlayerXpRewardRadius: (enemy) => this.isEnemyWithinPlayerXpRewardRadius(enemy),
+    }, {
+      smallAsteroidCollisionDamage: SMALL_ASTEROID_COLLISION_DAMAGE,
+      mediumAsteroidCollisionDamage: MEDIUM_ASTEROID_COLLISION_DAMAGE,
+    });
+    this.spawnDirector = new SpawnDirector(this.world, this.spawnConfig);
     this.bindEvents();
     this.updateHud();
     this.updateMenu("Start");
@@ -173,50 +214,20 @@ class BastardoidsApp {
     this.scene.add(this.worldScenery.root);
     this.scene.add(this.explosionSystem.root);
     this.scene.add(this.collisionRingRoot);
-
-    this.setupThrusterParticles();
+    this.thrusterParticles = new ThrusterParticleSystem(
+      this.scene,
+      this.thrusterConfig,
+      this.afterburnerConfig,
+      this.playerConfig.visualScale,
+    );
   }
 
-  setupThrusterParticles(): void {
-    const maxParticles = this.thrusterConfig.maxParticles;
-    const geometry = new THREE.BufferGeometry();
-    this.thrusterParticlePositions = new Float32Array(maxParticles * 3);
-    this.thrusterParticleColors = new Float32Array(maxParticles * 3);
+  isPlaying(): boolean {
+    return this.phase === "playing";
+  }
 
-    for (let index = 0; index < maxParticles; index += 1) {
-      const offset = index * 3;
-      this.thrusterParticlePositions[offset] = 0;
-      this.thrusterParticlePositions[offset + 1] = -9999;
-      this.thrusterParticlePositions[offset + 2] = 0;
-      this.thrusterParticleColors[offset] = 1;
-      this.thrusterParticleColors[offset + 1] = 0.65;
-      this.thrusterParticleColors[offset + 2] = 0.2;
-      this.thrusterParticlePool.push({
-        active: false,
-        position: new THREE.Vector3(),
-        velocity: new THREE.Vector3(),
-        age: 0,
-        lifetime: 0,
-        whiteness: 0,
-      });
-    }
-
-    geometry.setAttribute("position", new THREE.BufferAttribute(this.thrusterParticlePositions, 3));
-    geometry.setAttribute("color", new THREE.BufferAttribute(this.thrusterParticleColors, 3));
-
-    const material = new THREE.PointsMaterial({
-      size: this.thrusterConfig.particleSize,
-      sizeAttenuation: true,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-
-    this.thrusterPoints = new THREE.Points(geometry, material);
-    this.thrusterPoints.frustumCulled = false;
-    this.scene.add(this.thrusterPoints);
+  isGameplayVisible(): boolean {
+    return this.phase === "playing" || this.phase === "levelUp";
   }
 
   buildCollisionRingGeometry(): THREE.BufferGeometry {
@@ -285,6 +296,7 @@ class BastardoidsApp {
     window.addEventListener("blur", this.onWindowBlur);
     this.ui.onStart(() => this.startGame());
     this.ui.onQuit(() => this.quitToMenu());
+    this.ui.onLevelChoice((choiceIndex) => this.handleLevelUpChoice(choiceIndex));
   }
 
   onResize = (): void => {
@@ -299,14 +311,30 @@ class BastardoidsApp {
 
   onKeyDown = (event: KeyboardEvent): void => {
     this.audioSystem.unlock();
-    this.keys.add(event.key.toLowerCase());
 
-    if (event.code === "Space") {
-      event.preventDefault();
-      this.tryFirePrimaryWeapon();
+    if (this.phase === "levelUp") {
+      const choiceIndex = this.getLevelChoiceIndexFromKey(event.key);
+      if (choiceIndex !== null) {
+        event.preventDefault();
+        this.handleLevelUpChoice(choiceIndex);
+      }
+      return;
     }
 
-    if (!this.running && event.key === "Enter") {
+    if (ACTIVE_SKILL_KEYS.has(event.code as ActiveSkillKey) && this.isPlaying()) {
+      event.preventDefault();
+      this.tryActivateActiveSkill(event.code as ActiveSkillKey);
+      return;
+    }
+
+    this.keys.add(event.key.toLowerCase());
+
+    if (event.code === "Space" && this.isPlaying()) {
+      event.preventDefault();
+      this.combat.tryFirePlayerPrimaryWeapon(this.player, this.resolvedPlayerStats, this.elapsed);
+    }
+
+    if ((this.phase === "menu" || this.phase === "gameOver") && event.key === "Enter") {
       this.startGame();
     }
   };
@@ -324,14 +352,12 @@ class BastardoidsApp {
 
   onMouseDown = (event: MouseEvent): void => {
     this.audioSystem.unlock();
-    if (event.button !== 0) {
+    if (event.button !== 0 || !this.isPlaying()) {
       return;
     }
 
     this.primaryMouseDown = true;
-    if (this.running) {
-      this.tryFirePrimaryWeapon();
-    }
+    this.combat.tryFirePlayerPrimaryWeapon(this.player, this.resolvedPlayerStats, this.elapsed);
   };
 
   onMouseUp = (event: MouseEvent): void => {
@@ -347,48 +373,191 @@ class BastardoidsApp {
 
   startGame(): void {
     this.audioSystem.unlock();
-    this.running = true;
-    this.score = 0;
+    this.phase = "playing";
     this.elapsed = 0;
-    this.lastShotAt = -Infinity;
-    this.spawnCooldown = 0;
+    this.progression = createPlayerProgressionState();
+    this.resolvedPlayerStats = resolvePlayerStats(this.playerConfig, this.progression, this.elapsed);
+    this.combat.reset();
+    this.spawnDirector.reset();
     this.afterburnerCharge = this.afterburnerConfig.maxDurationSeconds;
     this.afterburnerActive = false;
     this.afterburnerShiftHeld = false;
     this.afterburnerEffectTime = 0;
-    this.currentSpeedCap = this.playerConfig.maxSpeed;
+    this.currentSpeedCap = this.resolvedPlayerStats.config.maxSpeed;
+    this.levelUpPauseAt = null;
+    this.keys.clear();
+    this.primaryMouseDown = false;
     this.clearEntities();
     this.createPlayer();
-    this.createHunter();
-    this.createHunter2();
+    this.spawnDirector.spawnInitialAsteroids(this.player, (size, position, velocity) =>
+      this.createAsteroid(size, position, velocity),
+    );
     this.updateHud();
     this.ui.hideMenu();
+    this.ui.hideLevelUp();
     this.ui.setGameplayCursorHidden(true);
     this.clock.start();
   }
 
   quitToMenu(): void {
-    this.running = false;
+    this.phase = "menu";
     this.stopLoopedMovementAudio();
     this.clearEntities();
+    this.levelUpPauseAt = null;
+    this.keys.clear();
     this.ui.setGameplayCursorHidden(false);
+    this.ui.hideLevelUp();
     this.updateMenu("Start");
   }
 
   gameOver(): void {
-    this.running = false;
+    this.phase = "gameOver";
     this.stopLoopedMovementAudio();
+    this.keys.clear();
+    this.primaryMouseDown = false;
+    this.levelUpPauseAt = null;
     this.ui.setGameplayCursorHidden(false);
-    if (this.score > this.highScore) {
-      this.highScore = this.score;
-      localStorage.setItem(STORAGE_KEY, String(this.highScore));
+    if (this.progression.totalXp > this.highestXp) {
+      this.highestXp = this.progression.totalXp;
+      storeHighestXp(this.highestXp);
     }
 
-    this.updateMenu("Restart", `Game over. Final score: ${this.score}.`);
+    this.ui.hideLevelUp();
+    this.updateMenu(
+      "Restart",
+      `Game over. Final XP: ${this.progression.totalXp}. Scrap: ${this.progression.scrap}.`,
+    );
   }
 
   updateMenu(buttonLabel: string, copy?: string): void {
-    this.ui.setMenuState(buttonLabel, this.highScore, copy);
+    this.ui.setMenuState(buttonLabel, this.highestXp, copy);
+  }
+
+  getStatusLabel(): string {
+    if (this.phase === "playing") {
+      return "Flight";
+    }
+    if (this.phase === "levelUp") {
+      return "Level Up";
+    }
+    if (this.phase === "gameOver") {
+      return "Game Over";
+    }
+    return "Menu";
+  }
+
+  getLevelChoiceIndexFromKey(key: string): number | null {
+    const parsed = Number.parseInt(key, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return null;
+    }
+    return parsed - 1;
+  }
+
+  refreshResolvedPlayerStats(): void {
+    this.resolvedPlayerStats = resolvePlayerStats(this.playerConfig, this.progression, this.elapsed);
+    if (!this.player) {
+      return;
+    }
+
+    this.player.thermalCap = this.resolvedPlayerStats.config.thermalCap;
+    this.player.vent = this.resolvedPlayerStats.config.vent;
+    this.player.heat = Math.min(this.player.heat, this.player.thermalCap);
+  }
+
+  grantPlayerRewards(xpReward: number, scrapReward: number): void {
+    const pendingBefore = this.progression.pendingLevelQueue.length;
+    queueProgressionRewards(this.progression, xpReward, scrapReward);
+    if (
+      this.progression.pendingLevelQueue.length > pendingBefore &&
+      this.levelUpPauseAt === null
+    ) {
+      this.levelUpPauseAt = this.elapsed + LEVEL_UP_PAUSE_DELAY_SECONDS;
+    }
+  }
+
+  maybePauseForLevelUp(): void {
+    if (!this.isPlaying()) {
+      return;
+    }
+
+    if (!hasPendingLevelUp(this.progression)) {
+      this.levelUpPauseAt = null;
+      return;
+    }
+
+    const nextLevel = getNextPendingLevel(this.progression);
+    if (!nextLevel) {
+      return;
+    }
+
+    if (this.levelUpPauseAt === null) {
+      this.levelUpPauseAt = this.elapsed + LEVEL_UP_PAUSE_DELAY_SECONDS;
+    }
+
+    if (this.elapsed < this.levelUpPauseAt) {
+      return;
+    }
+
+    this.phase = "levelUp";
+    this.levelUpPauseAt = null;
+    this.keys.clear();
+    this.primaryMouseDown = false;
+    this.stopLoopedMovementAudio();
+    this.refreshResolvedPlayerStats();
+    const offers = generateLevelUpOffers(
+      this.progression,
+      nextLevel,
+      this.resolvedPlayerStats.offerCount,
+    );
+    this.ui.showLevelUp(nextLevel, offers);
+    this.ui.setGameplayCursorHidden(false);
+  }
+
+  handleLevelUpChoice(choiceIndex: number): void {
+    if (this.phase !== "levelUp") {
+      return;
+    }
+
+    const appliedOffer = applyLevelUpOffer(this.progression, choiceIndex);
+    if (!appliedOffer) {
+      return;
+    }
+
+    this.refreshResolvedPlayerStats();
+
+    if (hasPendingLevelUp(this.progression)) {
+      const nextLevel = getNextPendingLevel(this.progression);
+      if (!nextLevel) {
+        return;
+      }
+      const nextOffers = generateLevelUpOffers(
+        this.progression,
+        nextLevel,
+        this.resolvedPlayerStats.offerCount,
+      );
+      this.ui.showLevelUp(nextLevel, nextOffers);
+      this.updateHud();
+      return;
+    }
+
+    this.phase = "playing";
+    this.ui.hideLevelUp();
+    this.ui.setGameplayCursorHidden(true);
+    this.updateHud();
+  }
+
+  tryActivateActiveSkill(key: ActiveSkillKey): void {
+    if (!this.isPlaying()) {
+      return;
+    }
+
+    const activated = activateBoundActiveSkill(this.progression, key, this.elapsed);
+    if (!activated) {
+      return;
+    }
+
+    this.refreshResolvedPlayerStats();
   }
 
   createPlayer(): void {
@@ -396,6 +565,7 @@ class BastardoidsApp {
     this.player = createdPlayer.player;
     this.playerLines = createdPlayer.playerLines;
     this.playerShield = createdPlayer.playerShield;
+    this.playerVentEffect = createdPlayer.playerVentEffect;
     this.scene.add(this.player.mesh);
     this.attachCollisionRing(this.player);
 
@@ -406,26 +576,9 @@ class BastardoidsApp {
     this.updatePointerWorld();
   }
 
-  createHunter(): void {
-    const definition = getEnemyShipDefinition("hunter");
-    const createdEnemy = createEnemyShip(
-      definition,
-      this.nextId++,
-      new THREE.Vector3(200, 0, 0),
-    );
-    this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
-    this.enemyShields.set(createdEnemy.enemy.id, createdEnemy.shield);
-    this.scene.add(createdEnemy.enemy.mesh);
-    this.attachCollisionRing(createdEnemy.enemy);
-  }
-
-  createHunter2(): void {
-    const definition = getEnemyShipDefinition("hunter");
-    const createdEnemy = createEnemyShip(
-      definition,
-      this.nextId++,
-      new THREE.Vector3(200, 0, 50),
-    );
+  spawnEnemy(name: EnemyShipName, position: THREE.Vector3): void {
+    const definition = getEnemyShipDefinition(name);
+    const createdEnemy = createEnemyShip(definition, this.nextId++, position);
     this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
     this.enemyShields.set(createdEnemy.enemy.id, createdEnemy.shield);
     this.scene.add(createdEnemy.enemy.mesh);
@@ -477,40 +630,6 @@ class BastardoidsApp {
     return asteroid;
   }
 
-  createProjectile(
-    ownerId: number,
-    faction: "player" | "enemy",
-    weaponName: ProjectileEntity["weapon"],
-    position: THREE.Vector3,
-    velocity: THREE.Vector3,
-  ): ProjectileEntity {
-    const weaponDefinition = getWeaponDefinition(weaponName);
-    const mesh = createWeaponProjectileMesh(weaponDefinition);
-    mesh.position.copy(position);
-    mesh.rotation.y = Math.atan2(velocity.x, velocity.z);
-
-    const projectile: ProjectileEntity = {
-      id: this.nextId++,
-      type: "projectile",
-      ownerId,
-      weapon: weaponDefinition.name,
-      faction,
-      mass: weaponDefinition.projectileMass,
-      damage: weaponDefinition.damage,
-      radius: weaponDefinition.radius,
-      mesh,
-      position: position.clone(),
-      velocity: velocity.clone(),
-      expiresAt: this.elapsed + weaponDefinition.lifetimeSeconds,
-      alive: true,
-    };
-
-    this.projectiles.set(projectile.id, projectile);
-    this.scene.add(mesh);
-    this.attachCollisionRing(projectile);
-    return projectile;
-  }
-
   buildAsteroidGeometry(pointCount: number, radius: number): THREE.BufferGeometry {
     const points: THREE.Vector3[] = [];
     for (let index = 0; index < pointCount; index += 1) {
@@ -538,95 +657,11 @@ class BastardoidsApp {
     return geometry;
   }
 
-  tryFirePrimaryWeapon(): void {
-    if (!this.running || !this.player) {
-      return;
-    }
-
-    const playerWeaponName = getPrimaryFireWeapon(this.playerConfig);
-    if (!playerWeaponName) {
-      return;
-    }
-
-    const playerWeaponConfig = getWeaponDefinition(playerWeaponName);
-    const minDelay = 1 / playerWeaponConfig.shotsPerSecond;
-    if (this.elapsed - this.lastShotAt < minDelay) {
-      return;
-    }
-
-    if (this.fireShipPrimaryWeapon(this.player, this.playerConfig)) {
-      this.lastShotAt = this.elapsed;
-    }
-  }
-
-  fireShipPrimaryWeapon(
-    ship: PlayerState | EnemyShipEntity,
-    shipConfig: {
-      weapon1: ProjectileEntity["weapon"] | null;
-      muzzleOffsetForward: number;
-      muzzleOffsetSide: number;
-    },
-  ): boolean {
-    const weaponName = getPrimaryFireWeapon(shipConfig);
-    if (!weaponName) {
-      return false;
-    }
-
-    const weaponDefinition = getWeaponDefinition(weaponName);
-    if (!this.canShipFireWeapon(ship, weaponDefinition)) {
-      return false;
-    }
-
-    ship.heat = Math.min(ship.thermalCap, ship.heat + weaponDefinition.heat);
-    if (weaponDefinition.fireSound) {
-      this.audioSystem.playSfx(weaponDefinition.fireSound, {
-        volume: ship.faction === "enemy" ? 0.4 : 0.65,
-        playbackRateMin: 0.92,
-        playbackRateMax: 1.06,
-      });
-    }
-
-    const { forward, right } = getShipBasis(ship.yaw);
-    const baseVelocity = ship.velocity
-      .clone()
-      .add(forward.clone().multiplyScalar(weaponDefinition.speed));
-    const muzzleForward = forward.clone().multiplyScalar(shipConfig.muzzleOffsetForward);
-
-    if (weaponDefinition.name === "plasmaOrb") {
-      this.createProjectile(
-        ship.id,
-        ship.faction,
-        weaponDefinition.name,
-        ship.position.clone().add(muzzleForward),
-        baseVelocity,
-      );
-      return true;
-    }
-
-    const sideOffset = right.clone().multiplyScalar(shipConfig.muzzleOffsetSide);
-
-    this.createProjectile(
-      ship.id,
-      ship.faction,
-      weaponDefinition.name,
-      ship.position.clone().add(muzzleForward).add(sideOffset),
-      baseVelocity.clone(),
-    );
-    this.createProjectile(
-      ship.id,
-      ship.faction,
-      weaponDefinition.name,
-      ship.position.clone().add(muzzleForward).sub(sideOffset),
-      baseVelocity.clone(),
-    );
-    return true;
-  }
-
   animate = (): void => {
     requestAnimationFrame(this.animate);
     this.performanceMonitor.beginFrame();
     const delta = Math.min(this.clock.getDelta() || 0.016, 0.033);
-    if (this.running) {
+    if (this.isPlaying()) {
       this.elapsed += delta;
       this.step(delta);
     }
@@ -637,34 +672,55 @@ class BastardoidsApp {
   };
 
   step(delta: number): void {
+    syncExpiredActiveSkills(this.progression, this.elapsed);
+    this.refreshResolvedPlayerStats();
     this.handleInput(delta);
     this.updateEnemyShips(delta);
     this.updateShipHeat(delta);
     this.updateShieldRegeneration(delta);
     this.updateAfterburner(delta);
-    this.spawnCooldown -= delta;
-    if (this.spawnCooldown <= 0) {
-      this.spawnAsteroid();
-      this.spawnCooldown = this.getNextSpawnDelay();
-    }
+    const { forward: cameraForward, right: cameraRight } = this.getCameraPlanarAxes();
+    this.spawnDirector.update({
+      delta,
+      elapsed: this.elapsed,
+      player: this.player,
+      enemies: this.enemies.values(),
+      cameraForward,
+      cameraRight,
+      getPlayerBounds: (distanceScreens) => this.getPlayerBounds(distanceScreens),
+      spawnEnemy: (name, position) => this.spawnEnemy(name, position),
+      createAsteroid: (size, position, velocity) => this.createAsteroid(size, position, velocity),
+    });
 
     this.integratePlayer(delta);
     this.integrateEnemyShips(delta);
-    this.updateThrusterParticles(delta);
+    this.thrusterParticles.update({
+      delta,
+      player: this.player,
+      enemies: this.enemies.values(),
+      playerThrusterInputState: this.thrusterInputState,
+      afterburnerRamp: this.getAfterburnerParticleRamp(),
+    });
     this.integrateAsteroids(delta);
-    this.integrateProjectiles(delta);
-    this.handleProjectileHits();
+    this.combat.updateProjectiles({
+      delta,
+      elapsed: this.elapsed,
+      player: this.player,
+      asteroids: [...this.asteroids.values()],
+      enemies: [...this.enemies.values()],
+      resolvedPlayerStats: this.resolvedPlayerStats,
+    });
     this.handleObjectCollisions();
     this.cleanupFarObjects();
     this.updateCamera(delta, false);
-    this.updateHud();
-    this.updateLoopedMovementAudio();
-
     if (this.playerLines && this.player) {
       this.playerLines.material.color.setHex(0xffffff);
     }
 
     this.updateShieldEffect();
+    this.maybePauseForLevelUp();
+    this.updateHud();
+    this.updateLoopedMovementAudio();
   }
 
   handleInput(delta: number): void {
@@ -672,22 +728,23 @@ class BastardoidsApp {
       return;
     }
 
-    const thrustingForward = this.keys.has("w");
-    const thrustingReverse = this.keys.has("s");
-    const strafingLeft = this.keys.has("a");
-    const strafingRight = this.keys.has("d");
-    const shiftHeld = this.keys.has("shift");
+    const controlsLocked = this.resolvedPlayerStats.disableThrusters;
+    const thrustingForward = !controlsLocked && this.keys.has("w");
+    const thrustingReverse = !controlsLocked && this.keys.has("s");
+    const strafingLeft = !controlsLocked && this.keys.has("a");
+    const strafingRight = !controlsLocked && this.keys.has("d");
+    const shiftHeld = !controlsLocked && this.keys.has("shift");
     const afterburnerEngaged = this.isAfterburnerEngaged(shiftHeld, thrustingForward);
     const boostedSpeedCap =
-      this.playerConfig.maxSpeed * this.afterburnerConfig.maxSpeedMultiplier;
+      this.resolvedPlayerStats.config.maxSpeed * this.afterburnerConfig.maxSpeedMultiplier;
     const decayPerSecond =
-      (boostedSpeedCap - this.playerConfig.maxSpeed) /
+      (boostedSpeedCap - this.resolvedPlayerStats.config.maxSpeed) /
       this.afterburnerConfig.disengageDecaySeconds;
     if (afterburnerEngaged) {
       this.currentSpeedCap = boostedSpeedCap;
     } else {
       this.currentSpeedCap = Math.max(
-        this.playerConfig.maxSpeed,
+        this.resolvedPlayerStats.config.maxSpeed,
         this.currentSpeedCap - decayPerSecond * delta,
       );
     }
@@ -702,7 +759,8 @@ class BastardoidsApp {
 
     this.updatePointerWorld();
     const toPointer = this.pointerWorld.clone().sub(this.player.position);
-    const targetYaw = toPointer.lengthSq() > 0.001 ? Math.atan2(toPointer.x, toPointer.z) : null;
+    const targetYaw =
+      !controlsLocked && toPointer.lengthSq() > 0.001 ? Math.atan2(toPointer.x, toPointer.z) : null;
     const playerIntent: ShipControlIntent = {
       targetYaw,
       forwardThrottle: thrustingForward ? 1 : 0,
@@ -712,13 +770,13 @@ class BastardoidsApp {
       firePrimary: false,
     };
 
-    applyShipControl(this.player, this.playerConfig, playerIntent, delta, {
+    applyShipControl(this.player, this.resolvedPlayerStats.config, playerIntent, delta, {
       maxSpeedOverride: activeSpeedCap,
       forwardThrustMultiplier: afterburnerEngaged ? this.afterburnerConfig.thrustMultiplier : 1,
     });
 
-    if (this.primaryMouseDown) {
-      this.tryFirePrimaryWeapon();
+    if (this.primaryMouseDown || this.resolvedPlayerStats.autoFireSelectedWeapon) {
+      this.combat.tryFirePlayerPrimaryWeapon(this.player, this.resolvedPlayerStats, this.elapsed);
     }
   }
 
@@ -738,7 +796,7 @@ class BastardoidsApp {
     }
 
     const asteroids = [...this.asteroids.values()];
-    const projectiles = [...this.projectiles.values()];
+    const projectiles = this.combat.getProjectilesSnapshot();
     const enemies = [...this.enemies.values()];
 
     for (const enemy of this.enemies.values()) {
@@ -760,7 +818,10 @@ class BastardoidsApp {
       });
 
       if (intent.firePrimary) {
-        const fired = this.fireShipPrimaryWeapon(enemy, enemy.definition);
+        const fired = this.combat.fireShipPrimaryWeapon(enemy, enemy.definition, {
+          elapsed: this.elapsed,
+          resolvedPlayerStats: this.resolvedPlayerStats,
+        });
         if (fired) {
           const weaponName = getPrimaryFireWeapon(enemy.definition);
           if (!weaponName) {
@@ -785,237 +846,12 @@ class BastardoidsApp {
     }
   }
 
-  updateThrusterParticles(delta: number): void {
-    this.updatePlayerThrusterHoldState(delta);
-    this.updateEnemyThrusterHoldState(delta);
-
-    for (const particle of this.thrusterParticlePool) {
-      if (!particle.active) {
-        continue;
-      }
-
-      particle.age += delta;
-      if (particle.age >= particle.lifetime) {
-        particle.active = false;
-        continue;
-      }
-
-      particle.position.addScaledVector(particle.velocity, delta);
-    }
-
-    if (this.player) {
-      this.emitPlayerThrusterParticles("forward", delta);
-      this.emitPlayerThrusterParticles("reverse", delta);
-      this.emitPlayerThrusterParticles("left", delta);
-      this.emitPlayerThrusterParticles("right", delta);
-    }
-
-    for (const enemy of this.enemies.values()) {
-      if (!enemy.alive) {
-        continue;
-      }
-
-      this.emitEnemyThrusterParticles(enemy, "forward", delta);
-      this.emitEnemyThrusterParticles(enemy, "reverse", delta);
-      this.emitEnemyThrusterParticles(enemy, "left", delta);
-      this.emitEnemyThrusterParticles(enemy, "right", delta);
-    }
-
-    this.syncThrusterParticleGeometry();
-  }
-
   integrateAsteroids(delta: number): void {
     for (const asteroid of this.asteroids.values()) {
       asteroid.position.addScaledVector(asteroid.velocity, delta);
       asteroid.mesh.position.copy(asteroid.position);
       asteroid.mesh.rotateOnAxis(asteroid.rotationAxis, asteroid.rotationSpeed * delta);
       this.syncCollisionRing(asteroid);
-    }
-  }
-
-  integrateProjectiles(delta: number): void {
-    for (const projectile of [...this.projectiles.values()]) {
-      projectile.position.addScaledVector(projectile.velocity, delta);
-      projectile.mesh.position.copy(projectile.position);
-      projectile.mesh.rotation.y = Math.atan2(projectile.velocity.x, projectile.velocity.z);
-      this.syncCollisionRing(projectile);
-
-      if (this.elapsed >= projectile.expiresAt) {
-        this.destroyProjectile(projectile);
-      }
-    }
-  }
-
-  handleProjectileHits(): void {
-    for (const projectile of [...this.projectiles.values()]) {
-      if (!projectile.alive) {
-        continue;
-      }
-
-      const target = this.findProjectileHitTarget(projectile);
-      if (!target) {
-        continue;
-      }
-
-      this.playProjectileHitSfx(projectile, target);
-      this.applyProjectileImpact(projectile, target);
-      this.destroyProjectile(projectile);
-      this.applyDamageToEntity(target, projectile.damage);
-    }
-  }
-
-  playProjectileHitSfx(
-    projectile: ProjectileEntity,
-    target: AsteroidEntity | EnemyShipEntity | PlayerState,
-  ): void {
-    const weaponDefinition = getWeaponDefinition(projectile.weapon);
-    if (!weaponDefinition.hitSound) {
-      return;
-    }
-
-    const hitVolume =
-      target.type === "asteroid"
-        ? weaponDefinition.hitVolumeAgainstAsteroid
-        : weaponDefinition.hitVolumeAgainstShip;
-    this.audioSystem.playSfx(weaponDefinition.hitSound, {
-      volume: hitVolume ?? 1,
-      offsetSeconds: weaponDefinition.hitSoundOffsetSeconds,
-      playbackRateMin: weaponDefinition.hitSoundPlaybackRate,
-      playbackRateMax: weaponDefinition.hitSoundPlaybackRate,
-    });
-  }
-
-  findProjectileHitTarget(
-    projectile: ProjectileEntity,
-  ): AsteroidEntity | EnemyShipEntity | PlayerState | null {
-    const candidates: Array<AsteroidEntity | EnemyShipEntity | PlayerState> = [
-      ...this.asteroids.values(),
-      ...this.enemies.values(),
-    ];
-
-    if (this.player) {
-      candidates.push(this.player);
-    }
-
-    let bestTarget: AsteroidEntity | EnemyShipEntity | PlayerState | null = null;
-    let bestDistanceSq = Infinity;
-
-    for (const candidate of candidates) {
-      if (!candidate.alive) {
-        continue;
-      }
-
-      if (candidate.type !== "asteroid" && candidate.id === projectile.ownerId) {
-        continue;
-      }
-
-      const hitDistance = projectile.radius + candidate.radius;
-      const distanceSq = projectile.position.distanceToSquared(candidate.position);
-      if (distanceSq > hitDistance * hitDistance || distanceSq >= bestDistanceSq) {
-        continue;
-      }
-
-      bestDistanceSq = distanceSq;
-      bestTarget = candidate;
-    }
-
-    return bestTarget;
-  }
-
-  applyProjectileImpact(
-    projectile: ProjectileEntity,
-    target: AsteroidEntity | EnemyShipEntity | PlayerState,
-  ): void {
-    const combinedMass = target.mass + projectile.mass;
-    if (combinedMass <= 0) {
-      return;
-    }
-
-    const postImpactVelocity = target.velocity
-      .clone()
-      .multiplyScalar(target.mass)
-      .addScaledVector(projectile.velocity, projectile.mass)
-      .multiplyScalar(1 / combinedMass);
-    target.velocity.copy(postImpactVelocity);
-
-    if (target.type !== "asteroid") {
-      return;
-    }
-
-    const impactOffset = projectile.position.clone().sub(target.position).setY(0);
-    if (impactOffset.lengthSq() > 0.0001) {
-      const tangent = new THREE.Vector3(-impactOffset.z, 0, impactOffset.x).normalize();
-      const tangentialSpeed = projectile.velocity.dot(tangent);
-      const spinImpulse =
-        (tangentialSpeed * projectile.mass) / Math.max(target.mass * target.radius, 0.001);
-      target.rotationSpeed += THREE.MathUtils.clamp(spinImpulse, -1.5, 1.5);
-    }
-  }
-
-  applyAsteroidCollisionDamage(first: CollisionBody, second: CollisionBody): void {
-    if (first.type === "asteroid" && second.type !== "asteroid") {
-      this.applyShipCollisionDamageFromAsteroid(second, first);
-      return;
-    }
-
-    if (second.type === "asteroid" && first.type !== "asteroid") {
-      this.applyShipCollisionDamageFromAsteroid(first, second);
-    }
-  }
-
-  applyShipCollisionDamageFromAsteroid(
-    ship: CollisionBody,
-    asteroid: AsteroidEntity,
-  ): void {
-    if (ship.type !== "player" && ship.type !== "enemyShip") {
-      return;
-    }
-
-    const damage =
-      asteroid.size === "small"
-        ? SMALL_ASTEROID_COLLISION_DAMAGE
-        : MEDIUM_ASTEROID_COLLISION_DAMAGE;
-    this.applyDamageToEntity(ship, damage);
-  }
-
-  applyDamageToEntity(entity: DamageableEntity, damage: number): void {
-    if (!entity.alive || damage <= 0) {
-      return;
-    }
-
-    entity.shieldRegenCooldownUntil = this.elapsed + entity.shieldRegenDelaySeconds;
-
-    let remainingDamage = damage;
-    if (entity.shield > 0) {
-      const absorbed = Math.min(entity.shield, remainingDamage);
-      entity.shield -= absorbed;
-      remainingDamage -= absorbed;
-    }
-
-    if (remainingDamage > 0) {
-      entity.hull = Math.max(0, entity.hull - remainingDamage);
-    }
-
-    if (entity.hull <= 0) {
-      if (entity.type === "asteroid") {
-        if (entity.size === "small") {
-          this.destroyAsteroid(entity);
-          this.score += 1;
-        } else {
-          this.splitLargeAsteroid(entity);
-        }
-        return;
-      }
-
-      if (entity.type === "enemyShip") {
-        this.destroyEnemy(entity);
-        this.score += entity.definition.scoreValue;
-        return;
-      }
-
-      this.destroyPlayer();
-      this.gameOver();
-      return;
     }
   }
 
@@ -1072,7 +908,12 @@ class BastardoidsApp {
         }
 
         this.playPlayerCollisionSfx(first, second);
-        this.applyAsteroidCollisionDamage(first, second);
+        this.combat.applyAsteroidCollisionDamage(
+          first,
+          second,
+          this.elapsed,
+          this.resolvedPlayerStats,
+        );
       }
     }
   }
@@ -1112,50 +953,6 @@ class BastardoidsApp {
 
     this.destroyAsteroid(asteroid);
   }
-
-  spawnAsteroid(): void {
-    if (!this.player) {
-      return;
-    }
-
-    const cameraForward = new THREE.Vector3()
-      .subVectors(this.camera.position, this.cameraFocus)
-      .setY(0)
-      .normalize();
-    const cameraRight = new THREE.Vector3(cameraForward.z, 0, -cameraForward.x);
-    const spawnBounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
-    const spawnSide = Math.floor(Math.random() * 4);
-    const along = (Math.random() - 0.5) * 2;
-    const center = this.player.position.clone();
-    const spawnPosition = center.clone();
-
-    if (spawnSide === 0) {
-      spawnPosition.addScaledVector(cameraRight, spawnBounds.halfWidth * along);
-      spawnPosition.addScaledVector(cameraForward, spawnBounds.halfDepth);
-    } else if (spawnSide === 1) {
-      spawnPosition.addScaledVector(cameraRight, spawnBounds.halfWidth * along);
-      spawnPosition.addScaledVector(cameraForward, -spawnBounds.halfDepth);
-    } else if (spawnSide === 2) {
-      spawnPosition.addScaledVector(cameraForward, spawnBounds.halfDepth * along);
-      spawnPosition.addScaledVector(cameraRight, spawnBounds.halfWidth);
-    } else {
-      spawnPosition.addScaledVector(cameraForward, spawnBounds.halfDepth * along);
-      spawnPosition.addScaledVector(cameraRight, -spawnBounds.halfWidth);
-    }
-
-    const size = Math.random() < 0.45 ? "medium" : "small";
-    const asteroidCfg = getAsteroidDefinition(size);
-    const toCenter = center.clone().sub(spawnPosition).setY(0).normalize();
-    const angleOffset = (Math.random() - 0.5) * (Math.PI / 2.2);
-    const velocity = toCenter
-      .applyAxisAngle(new THREE.Vector3(0, 1, 0), angleOffset)
-      .multiplyScalar(
-        asteroidCfg.minSpeed + Math.random() * (asteroidCfg.maxSpeed - asteroidCfg.minSpeed),
-      );
-
-    this.createAsteroid(size, spawnPosition, velocity);
-  }
-
   cleanupFarObjects(): void {
     if (!this.player) {
       return;
@@ -1169,11 +966,7 @@ class BastardoidsApp {
     }
 
     const projectileBounds = this.getPlayerBounds(this.world.asteroidDistanceScreens);
-    for (const projectile of [...this.projectiles.values()]) {
-      if (this.isOutsidePlayerBounds(projectile.position, projectileBounds)) {
-        this.destroyProjectile(projectile);
-      }
-    }
+    this.combat.cleanupProjectilesOutsideBounds(this.player, projectileBounds);
   }
 
   updateCamera(delta: number, force: boolean): void {
@@ -1194,12 +987,22 @@ class BastardoidsApp {
 
   updateHud(): void {
     this.ui.updateHud({
-      score: this.score,
-      running: this.running,
-      highScore: this.highScore,
+      scrap: this.progression.scrap,
+      gameplayVisible: this.isGameplayVisible(),
+      crosshairVisible: this.isPlaying(),
+      highXp: this.highestXp,
+      statusLabel: this.getStatusLabel(),
       velocityX: this.player ? this.player.velocity.x : 0,
       velocityZ: this.player ? this.player.velocity.z : 0,
       performance: this.debugMode ? this.performanceMonitor.getSnapshot() : null,
+    });
+    const displayedLevel = getLevelForXp(this.progression.totalXp);
+    const xpProgress = getXpProgressForLevel(this.progression.totalXp, displayedLevel);
+    this.ui.updateProgression({
+      level: displayedLevel,
+      currentXp: this.progression.totalXp,
+      levelStartXp: xpProgress.levelStartXp,
+      nextLevelXp: xpProgress.nextLevelXp,
     });
     this.ui.updateEnemyTrackers(this.buildEnemyTrackerSnapshots());
     this.ui.updateShipStatus({
@@ -1228,7 +1031,7 @@ class BastardoidsApp {
     angleDegrees: number;
     distanceUnits: number;
   }> {
-    if (!this.running || !this.player) {
+    if (!this.isGameplayVisible() || !this.player) {
       return [];
     }
 
@@ -1319,7 +1122,7 @@ class BastardoidsApp {
 
   updateLoopedMovementAudio(): void {
     const playerUsingThrusters = THRUSTER_NAMES.some((name) => this.thrusterInputState[name]);
-    if (this.running && this.player && playerUsingThrusters) {
+    if (this.isPlaying() && this.player && playerUsingThrusters) {
       this.audioSystem.playLoop(PLAYER_THRUSTER_LOOP_ID, "thrustersLongLoop", {
         volume: PLAYER_THRUSTER_AUDIO_VOLUME,
       });
@@ -1327,7 +1130,7 @@ class BastardoidsApp {
       this.audioSystem.stopLoop(PLAYER_THRUSTER_LOOP_ID);
     }
 
-    if (this.running && this.player && this.afterburnerActive) {
+    if (this.isPlaying() && this.player && this.afterburnerActive) {
       this.audioSystem.playLoop(PLAYER_AFTERBURNER_LOOP_ID, "afterburnerLoop", {
         volume: PLAYER_AFTERBURNER_AUDIO_VOLUME,
       });
@@ -1335,7 +1138,7 @@ class BastardoidsApp {
       this.audioSystem.stopLoop(PLAYER_AFTERBURNER_LOOP_ID);
     }
 
-    if (!this.running || !this.player) {
+    if (!this.isPlaying() || !this.player) {
       this.stopEnemyThrusterLoops();
       return;
     }
@@ -1386,16 +1189,16 @@ class BastardoidsApp {
     };
   }
 
-  canShipFireWeapon(
-    ship: ShipEntity,
-    weaponDefinition: ReturnType<typeof getWeaponDefinition>,
-  ): boolean {
-    return ship.heat + weaponDefinition.heat <= ship.thermalCap;
-  }
-
   updateShipHeat(delta: number): void {
     if (this.player) {
-      this.ventShipHeat(this.player, delta);
+      if (this.resolvedPlayerStats.emergencyVentHeatPerSecond > 0) {
+        this.player.heat = Math.max(
+          0,
+          this.player.heat - this.resolvedPlayerStats.emergencyVentHeatPerSecond * delta,
+        );
+      } else {
+        this.ventShipHeat(this.player, delta);
+      }
     }
 
     for (const enemy of this.enemies.values()) {
@@ -1408,7 +1211,7 @@ class BastardoidsApp {
   }
 
   updateShieldRegeneration(delta: number): void {
-    if (this.player) {
+    if (this.player && !this.resolvedPlayerStats.disableShield) {
       this.regenerateShield(this.player, delta);
     }
 
@@ -1432,7 +1235,7 @@ class BastardoidsApp {
   }
 
   getConfigHeatSoftCap(): number {
-    return Math.floor(this.playerConfig.thermalCap * 2 / 3);
+    return Math.floor(this.resolvedPlayerStats.config.thermalCap * 2 / 3);
   }
 
   regenerateShield(entity: DamageableEntity, delta: number): void {
@@ -1537,13 +1340,6 @@ class BastardoidsApp {
     this.scene.remove(enemy.mesh);
   }
 
-  destroyProjectile(projectile: ProjectileEntity): void {
-    projectile.alive = false;
-    this.projectiles.delete(projectile.id);
-    this.removeCollisionRing(projectile.id);
-    this.scene.remove(projectile.mesh);
-  }
-
   clearEntities(): void {
     this.stopLoopedMovementAudio();
     for (const asteroid of this.asteroids.values()) {
@@ -1552,13 +1348,10 @@ class BastardoidsApp {
     for (const enemy of this.enemies.values()) {
       this.scene.remove(enemy.mesh);
     }
-    for (const projectile of this.projectiles.values()) {
-      this.scene.remove(projectile.mesh);
-    }
+    this.combat.clearProjectiles();
     this.asteroids.clear();
     this.enemies.clear();
     this.enemyShields.clear();
-    this.projectiles.clear();
     this.collisionRings.clear();
     this.collisionRingRoot.clear();
 
@@ -1568,8 +1361,15 @@ class BastardoidsApp {
     this.player = null;
     this.playerLines = null;
     this.playerShield = null;
+    this.playerVentEffect = null;
     this.primaryMouseDown = false;
-    this.resetThrusterParticles();
+    for (const key of THRUSTER_NAMES) {
+      this.thrusterInputState[key] = false;
+    }
+    this.afterburnerActive = false;
+    this.afterburnerShiftHeld = false;
+    this.afterburnerEffectTime = 0;
+    this.thrusterParticles.reset();
     this.explosionSystem.clear();
   }
 
@@ -1593,6 +1393,7 @@ class BastardoidsApp {
     this.player = null;
     this.playerLines = null;
     this.playerShield = null;
+    this.playerVentEffect = null;
   }
 
   spawnExplosion(
@@ -1617,15 +1418,6 @@ class BastardoidsApp {
     });
   }
 
-  getNextSpawnDelay(): number {
-    const rateIncreaseSteps = Math.floor(this.elapsed / this.spawnConfig.increaseEverySeconds);
-    const asteroidsPerEight =
-      this.spawnConfig.basePerEightSeconds +
-      rateIncreaseSteps * this.spawnConfig.increasePerEightSeconds;
-    const baseDelay = 8 / asteroidsPerEight;
-    return Math.max(0.35, baseDelay + (Math.random() * 2 - 1) * this.spawnConfig.jitterSeconds);
-  }
-
   getWorldViewHeight(): number {
     return this.cameraRig.getWorldViewHeight();
   }
@@ -1636,12 +1428,6 @@ class BastardoidsApp {
 
   getCameraLookDirection(): THREE.Vector3 {
     return this.player ? this.cameraRig.getLookDirection(this.player) : new THREE.Vector3(0, 0, -1);
-  }
-
-  loadHighScore(): number {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? Number.parseInt(raw, 10) : 0;
-    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   isAfterburnerEngaged(shiftHeld: boolean, thrustingForward: boolean): boolean {
@@ -1685,10 +1471,17 @@ class BastardoidsApp {
 
       this.updateShieldMesh(enemy, shield);
     }
+
+    this.updateEmergencyVentEffect();
   }
 
   updateShieldMesh(ship: ShipEntity, shieldMesh: PlayerShield): void {
     if (ship.maxShield <= 0 || ship.shield <= 0) {
+      shieldMesh.visible = false;
+      return;
+    }
+
+    if (ship.type === "player" && this.resolvedPlayerStats.disableShield) {
       shieldMesh.visible = false;
       return;
     }
@@ -1719,94 +1512,51 @@ class BastardoidsApp {
     shieldMaterial.color.setHex(recentlyHit ? hitColor : baseColor);
   }
 
-  updatePlayerThrusterHoldState(delta: number): void {
-    const buildup = this.thrusterConfig.buildupSeconds;
-    for (const key of THRUSTER_NAMES) {
-      this.thrusterHoldTime[key] = this.thrusterInputState[key]
-        ? Math.min(this.thrusterHoldTime[key] + delta, buildup)
-        : 0;
+  isEnemyWithinPlayerXpRewardRadius(enemy: EnemyShipEntity): boolean {
+    if (!this.player || !this.player.alive) {
+      return false;
     }
+
+    return (
+      this.player.position.distanceToSquared(enemy.position) <=
+      PLAYER_ENEMY_PROXIMITY_XP_RADIUS * PLAYER_ENEMY_PROXIMITY_XP_RADIUS
+    );
   }
 
-  updateEnemyThrusterHoldState(delta: number): void {
-    const buildup = this.thrusterConfig.buildupSeconds;
-    for (const enemy of this.enemies.values()) {
-      for (const key of THRUSTER_NAMES) {
-        enemy.thrusterState.holdTime[key] = enemy.thrusterState.inputState[key]
-          ? Math.min(enemy.thrusterState.holdTime[key] + delta, buildup)
-          : 0;
-      }
-    }
-  }
-
-  emitPlayerThrusterParticles(name: ThrusterName, delta: number): void {
-    if (!this.player || !this.thrusterInputState[name]) {
-      this.thrusterEmissionCarry[name] = 0;
+  updateEmergencyVentEffect(): void {
+    if (!this.playerVentEffect) {
       return;
     }
 
-    const intensity = this.getThrusterIntensity(name);
-    let emissionRate = THREE.MathUtils.lerp(
-      this.thrusterConfig.minParticlesPerSecond,
-      this.thrusterConfig.maxParticlesPerSecond,
-      intensity,
-    );
-    emissionRate *= this.getThrusterEmissionMultiplier(name);
-    this.thrusterEmissionCarry[name] += emissionRate * delta;
-    const emissionCount = Math.floor(this.thrusterEmissionCarry[name]);
-    this.thrusterEmissionCarry[name] -= emissionCount;
-
-    const emitter = this.getThrusterEmitter(this.player, name);
-    for (let count = 0; count < emissionCount; count += 1) {
-      this.spawnThrusterParticle(
-        this.player,
-        emitter,
-        intensity,
-        this.getThrusterLengthMultiplier(name),
-      );
-    }
-  }
-
-  emitEnemyThrusterParticles(
-    enemy: EnemyShipEntity,
-    name: ThrusterName,
-    delta: number,
-  ): void {
-    if (!enemy.thrusterState.inputState[name]) {
-      enemy.thrusterState.emissionCarry[name] = 0;
+    if (!this.showEmergencyVentEffect) {
+      hideEmergencyVentEffect(this.playerVentEffect);
       return;
     }
 
-    const intensity = this.getEnemyThrusterIntensity(enemy, name);
-    const emissionRate = THREE.MathUtils.lerp(
-      this.thrusterConfig.minParticlesPerSecond,
-      this.thrusterConfig.maxParticlesPerSecond,
-      intensity,
-    );
-    enemy.thrusterState.emissionCarry[name] += emissionRate * delta;
-    const emissionCount = Math.floor(enemy.thrusterState.emissionCarry[name]);
-    enemy.thrusterState.emissionCarry[name] -= emissionCount;
-
-    const emitter = this.getThrusterEmitter(enemy, name);
-    for (let count = 0; count < emissionCount; count += 1) {
-      this.spawnThrusterParticle(enemy, emitter, intensity, 1);
+    const ventRuntime = this.progression.activeSkillRuntimes.emergencyVent;
+    const currentTier = this.progression.ownedSkillTiers.emergencyVent ?? 0;
+    if (
+      !ventRuntime ||
+      ventRuntime.activeUntil <= this.elapsed ||
+      currentTier <= 0
+    ) {
+      hideEmergencyVentEffect(this.playerVentEffect);
+      return;
     }
-  }
 
-  getThrusterIntensity(name: ThrusterName): number {
-    return THREE.MathUtils.clamp(
-      this.thrusterHoldTime[name] / this.thrusterConfig.buildupSeconds,
+    const activeEffect =
+      getPlayerSkillDefinition("emergencyVent").tiers[currentTier - 1]?.activeEffect ?? null;
+    if (!activeEffect) {
+      hideEmergencyVentEffect(this.playerVentEffect);
+      return;
+    }
+
+    const progress = THREE.MathUtils.clamp(
+      1 - (ventRuntime.activeUntil - this.elapsed) / activeEffect.durationSeconds,
       0,
       1,
     );
-  }
-
-  getEnemyThrusterIntensity(enemy: EnemyShipEntity, name: ThrusterName): number {
-    return THREE.MathUtils.clamp(
-      enemy.thrusterState.holdTime[name] / this.thrusterConfig.buildupSeconds,
-      0,
-      1,
-    );
+    updateEmergencyVentEffectVisual(this.playerVentEffect, this.elapsed, progress);
   }
 
   getAfterburnerParticleRamp(): number {
@@ -1821,222 +1571,11 @@ class BastardoidsApp {
     );
   }
 
-  getThrusterEmissionMultiplier(name: ThrusterName): number {
-    if (name !== "forward") {
-      return 1;
-    }
-
-    return THREE.MathUtils.lerp(
-      1,
-      this.afterburnerConfig.particleDensityMultiplier,
-      this.getAfterburnerParticleRamp(),
-    );
-  }
-
-  getThrusterLengthMultiplier(name: ThrusterName): number {
-    if (name !== "forward") {
-      return 1;
-    }
-
-    return THREE.MathUtils.lerp(
-      1,
-      this.afterburnerConfig.particleLengthMultiplier,
-      this.getAfterburnerParticleRamp(),
-    );
-  }
-
-  getThrusterEmitter(ship: ShipEntity, name: ThrusterName): ThrusterEmitter {
-    const forward = new THREE.Vector3(Math.sin(ship.yaw), 0, Math.cos(ship.yaw));
-    const right = new THREE.Vector3(forward.z, 0, -forward.x);
-    const up = new THREE.Vector3(0, 1, 0);
-    const visualScale = ship.type === "player" ? this.playerConfig.visualScale : ship.definition.visualScale;
-    const forwardOffset = this.thrusterConfig.forwardOffset * visualScale;
-    const forwardSideOffset = this.thrusterConfig.forwardSideOffset * visualScale;
-    const reverseOffset = this.thrusterConfig.reverseOffset * visualScale;
-    const reverseSideOffset = this.thrusterConfig.reverseSideOffset * visualScale;
-    const sideOffset = this.thrusterConfig.sideOffset * visualScale;
-    const sideForwardOffset = this.thrusterConfig.sideForwardOffset * visualScale;
-
-    if (name === "forward") {
-      return {
-        position:
-          Math.random() < 0.5
-            ? ship.position
-                .clone()
-                .add(forward.clone().multiplyScalar(forwardOffset))
-                .add(right.clone().multiplyScalar(forwardSideOffset))
-            : ship.position
-                .clone()
-                .add(forward.clone().multiplyScalar(forwardOffset))
-                .add(right.clone().multiplyScalar(-forwardSideOffset)),
-        direction: forward.clone().multiplyScalar(-1),
-        tangent: right,
-        normal: up,
-        name,
-      };
-    }
-
-    if (name === "reverse") {
-      return {
-        position:
-          Math.random() < 0.5
-            ? ship.position
-                .clone()
-                .add(forward.clone().multiplyScalar(reverseOffset))
-                .add(right.clone().multiplyScalar(reverseSideOffset))
-            : ship.position
-                .clone()
-                .add(forward.clone().multiplyScalar(reverseOffset))
-                .add(right.clone().multiplyScalar(-reverseSideOffset)),
-        direction: forward.clone(),
-        tangent: right,
-        normal: up,
-        name,
-      };
-    }
-
-    if (name === "left") {
-      return {
-        position: ship.position
-          .clone()
-          .add(right.clone().multiplyScalar(-sideOffset))
-          .add(forward.clone().multiplyScalar(sideForwardOffset)),
-        direction: right.clone().multiplyScalar(-1),
-        tangent: forward,
-        normal: up,
-        name,
-      };
-    }
-
-    return {
-      position: ship.position
-        .clone()
-        .add(right.clone().multiplyScalar(sideOffset))
-        .add(forward.clone().multiplyScalar(sideForwardOffset)),
-      direction: right.clone(),
-      tangent: forward,
-      normal: up,
-      name,
-    };
-  }
-
-  spawnThrusterParticle(
-    ship: ShipEntity,
-    emitter: ThrusterEmitter,
-    intensity: number,
-    lengthMultiplier: number,
-  ): void {
-    const particle = this.thrusterParticlePool.find((candidate) => !candidate.active);
-    if (!particle) {
-      return;
-    }
-
-    const lifetime = THREE.MathUtils.lerp(
-      this.thrusterConfig.minLifetimeSeconds,
-      this.thrusterConfig.maxLifetimeSeconds,
-      intensity,
-    ) * lengthMultiplier;
-    const speed = THREE.MathUtils.lerp(
-      this.thrusterConfig.minSpeed,
-      this.thrusterConfig.maxSpeed,
-      intensity,
-    ) * lengthMultiplier;
-    const spread = THREE.MathUtils.lerp(
-      this.thrusterConfig.minSpread,
-      this.thrusterConfig.maxSpread,
-      intensity,
-    );
-    const spawnJitter = this.thrusterConfig.spawnJitter;
-    const tangentOffset = (Math.random() * 2 - 1) * spawnJitter;
-    const normalOffset = (Math.random() * 2 - 1) * spawnJitter;
-    const lateralVelocity = (Math.random() * 2 - 1) * spread;
-    const verticalVelocity = (Math.random() * 2 - 1) * spread * 0.35;
-    const afterburnerWhiteness =
-      ship.type === "player" && emitter.name === "forward"
-        ? THREE.MathUtils.lerp(0, 0.7, this.getAfterburnerParticleRamp())
-        : 0;
-
-    particle.active = true;
-    particle.age = 0;
-    particle.lifetime = lifetime * (0.85 + Math.random() * 0.3);
-    particle.whiteness = afterburnerWhiteness;
-    particle.position
-      .copy(emitter.position)
-      .addScaledVector(emitter.tangent, tangentOffset)
-      .addScaledVector(emitter.normal, normalOffset);
-    particle.velocity
-      .copy(ship.velocity)
-      .addScaledVector(emitter.direction, speed * (0.85 + Math.random() * 0.3))
-      .addScaledVector(emitter.tangent, lateralVelocity)
-      .addScaledVector(emitter.normal, verticalVelocity);
-  }
-
   syncEnemyThrusterState(enemy: EnemyShipEntity, intent: ShipControlIntent): void {
     enemy.thrusterState.inputState.forward = intent.forwardThrottle > 0.1;
     enemy.thrusterState.inputState.reverse = intent.reverseThrottle > 0.1;
     enemy.thrusterState.inputState.left = intent.strafe > 0.1;
     enemy.thrusterState.inputState.right = intent.strafe < -0.1;
-  }
-
-  syncThrusterParticleGeometry(): void {
-    if (!this.thrusterPoints || !this.thrusterParticlePositions || !this.thrusterParticleColors) {
-      return;
-    }
-
-    for (let index = 0; index < this.thrusterParticlePool.length; index += 1) {
-      const particle = this.thrusterParticlePool[index];
-      const offset = index * 3;
-      if (!particle.active) {
-        this.thrusterParticlePositions[offset] = 0;
-        this.thrusterParticlePositions[offset + 1] = -9999;
-        this.thrusterParticlePositions[offset + 2] = 0;
-        continue;
-      }
-
-      const lifeAlpha = 1 - particle.age / particle.lifetime;
-      this.thrusterParticlePositions[offset] = particle.position.x;
-      this.thrusterParticlePositions[offset + 1] = particle.position.y;
-      this.thrusterParticlePositions[offset + 2] = particle.position.z;
-      const baseGreen = THREE.MathUtils.lerp(0.25, 0.8, lifeAlpha);
-      const baseBlue = THREE.MathUtils.lerp(0.02, 0.18, lifeAlpha);
-      this.thrusterParticleColors[offset] = 1;
-      this.thrusterParticleColors[offset + 1] = THREE.MathUtils.lerp(
-        baseGreen,
-        0.96,
-        particle.whiteness,
-      );
-      this.thrusterParticleColors[offset + 2] = THREE.MathUtils.lerp(
-        baseBlue,
-        0.72,
-        particle.whiteness,
-      );
-    }
-
-    this.thrusterPoints.geometry.attributes.position.needsUpdate = true;
-    this.thrusterPoints.geometry.attributes.color.needsUpdate = true;
-  }
-
-  resetThrusterParticles(): void {
-    for (const key of THRUSTER_NAMES) {
-      this.thrusterInputState[key] = false;
-      this.thrusterHoldTime[key] = 0;
-      this.thrusterEmissionCarry[key] = 0;
-    }
-
-    this.afterburnerActive = false;
-    this.afterburnerShiftHeld = false;
-    this.afterburnerEffectTime = 0;
-
-    for (const particle of this.thrusterParticlePool) {
-      particle.active = false;
-      particle.age = 0;
-      particle.lifetime = 0;
-      particle.whiteness = 0;
-      particle.position.set(0, -9999, 0);
-      particle.velocity.set(0, 0, 0);
-    }
-
-    this.syncThrusterParticleGeometry();
   }
 
   getReferenceGridBounds(): ReferenceGridBounds {

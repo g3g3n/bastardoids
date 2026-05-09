@@ -1,6 +1,7 @@
 {
   "debugMode": true,
   "showCollisionRings": false,
+  "showEmergencyVentEffect": true,
   "world": {
     "asteroidDistanceScreens": 5.0,
     "asteroidDespawnDistanceScreens": 7.0,
@@ -26,7 +27,7 @@
     "backgroundStarSize": 0.6
   },
   "player": {
-    "hullMass": 28.5,
+    "hullMass": 24.5,
     "hull": 40,
     "shield": 40,
     "shieldRegen": 15,
@@ -39,7 +40,7 @@
     "strafeThrust": 360,
     "maxSpeed": 32,
     "strafeMaxSpeed": 14,
-    "shipModel": "ship6",
+    "shipModel": "ship1",
     "weapon1": "laser",
     "visualScale": 1.65,
     "turnRate": 2855.25,
@@ -81,13 +82,13 @@
     "particleRampSeconds": 1.5
   },
   "spawning": {
-    "basePerEightSeconds": 5,
-    "increaseEverySeconds": 20,
+    "basePerEightSeconds": 3,
+    "increaseEverySeconds": 25,
     "increasePerEightSeconds": 1,
     "jitterSeconds": 0.7
   },
   "physics": {
-    "restitution": 0.9,
+    "restitution": 0.5,
     "separationBias": 0.02
   }
 }

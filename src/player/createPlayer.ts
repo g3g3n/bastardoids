@@ -1,12 +1,20 @@
 import * as THREE from "three";
-import type { PlayerConfig, PlayerLines, PlayerShield, PlayerState } from "../types";
+import type {
+  PlayerConfig,
+  PlayerLines,
+  PlayerShield,
+  PlayerState,
+  PlayerVentEffect,
+} from "../types";
 import { getTotalShipMass } from "../entities/ships/loadout";
 import { createShipVisual } from "../visuals/createShipVisual";
+import { createEmergencyVentEffect } from "../visuals/EmergencyVentEffect";
 
 export interface CreatedPlayer {
   player: PlayerState;
   playerLines: PlayerLines;
   playerShield: PlayerShield;
+  playerVentEffect: PlayerVentEffect;
 }
 
 export function createPlayer(playerConfig: PlayerConfig, nextId: number): CreatedPlayer {
@@ -28,6 +36,9 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
   );
   shield.visible = false;
   group.add(shield);
+
+  const ventEffect = createEmergencyVentEffect(playerConfig.radius);
+  group.add(ventEffect.root);
 
   const player: PlayerState = {
     id: nextId,
@@ -57,5 +68,6 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
     player,
     playerLines: lines,
     playerShield: shield,
+    playerVentEffect: ventEffect,
   };
 }

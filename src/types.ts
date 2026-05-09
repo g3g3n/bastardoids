@@ -8,6 +8,7 @@ import type {
   Points,
   PointsMaterial,
   SphereGeometry,
+  Sprite,
   Vector3,
 } from "three";
 
@@ -36,7 +37,7 @@ export type SoundEffectName =
   | "plasmaOrbShot1"
   | "thrustersLongLoop";
 export type Faction = "player" | "enemy";
-export type EnemyShipName = "hunter";
+export type EnemyShipName = "Hunter T" | "Hunter L" | "Hunter P";
 export type EnemyTactic =
   | "closeToRange"
   | "holdRange"
@@ -176,6 +177,8 @@ export interface AsteroidDefinition {
   radius: number;
   visualScale: number;
   maxHull: number;
+  xpReward: number;
+  scrapReward: number;
   minSpeed: number;
   maxSpeed: number;
   rotationSpeedMin: number;
@@ -197,6 +200,7 @@ export interface PhysicsConfig {
 export interface GameConfig {
   debugMode: boolean;
   showCollisionRings: boolean;
+  showEmergencyVentEffect: boolean;
   world: WorldConfig;
   player: PlayerConfig;
   thrusters: ThrusterConfig;
@@ -254,7 +258,8 @@ export interface EnemyShipDefinition extends ShipMovementConfig {
   tacticLockSeconds: number;
   pursuitLoseSeconds: number;
   returnHomeRadius: number;
-  scoreValue: number;
+  xpReward: number;
+  scrapReward: number;
   lineColor: number;
 }
 
@@ -360,6 +365,31 @@ export interface ThrusterEmitter {
   tangent: Vector3;
   normal: Vector3;
   name: ThrusterName;
+}
+
+export interface VentCloudLayer {
+  sprite: Sprite;
+  pulseOffset: number;
+  scaleFactor: number;
+  driftSpeed: number;
+}
+
+export interface VentCloudPuff {
+  sprite: Sprite;
+  angleOffset: number;
+  radiusFactor: number;
+  scaleFactor: number;
+  driftSpeed: number;
+  spinSpeed: number;
+  pulseOffset: number;
+  verticalOffset: number;
+}
+
+export interface PlayerVentEffect {
+  root: Group;
+  shipRadius: number;
+  hazeLayers: VentCloudLayer[];
+  puffs: VentCloudPuff[];
 }
 
 export interface ReferenceGridBounds {

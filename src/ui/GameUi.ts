@@ -3,15 +3,24 @@ import type { PerformanceSnapshot } from "../PerformanceMonitor";
 import { requireElement } from "../utils";
 
 const DEFAULT_MENU_COPY =
-  "Wireframe prototype with mouse steering, inertial thrust, elastic-ish collisions, and persistent high score.";
+  "Wireframe prototype with mouse steering, inertial thrust, elastic-ish collisions, and run-based progression.";
 
 export interface HudSnapshot {
-  score: number;
-  running: boolean;
-  highScore: number;
+  scrap: number;
+  gameplayVisible: boolean;
+  crosshairVisible: boolean;
+  highXp: number;
+  statusLabel: string;
   velocityX: number;
   velocityZ: number;
   performance: PerformanceSnapshot | null;
+}
+
+export interface ProgressionSnapshot {
+  level: number;
+  currentXp: number;
+  levelStartXp: number;
+  nextLevelXp: number;
 }
 
 export interface ShipStatusSnapshot {
@@ -42,6 +51,16 @@ export interface EnemyTrackerSnapshot {
   distanceUnits: number;
 }
 
+export interface LevelUpChoiceSnapshot {
+  name: string;
+  kind: "passive" | "active";
+  activeKey: string | null;
+  currentTier: number;
+  nextTier: number;
+  maxTier: number;
+  description: string;
+}
+
 export class GameUi {
   root: HTMLDivElement;
   hud: HTMLDivElement;
@@ -52,6 +71,10 @@ export class GameUi {
   heatSoftCapLabel: HTMLSpanElement;
   heatMaxMarker: HTMLDivElement;
   heatMaxLabel: HTMLSpanElement;
+  progressionWidget: HTMLDivElement;
+  progressionLevel: HTMLSpanElement;
+  progressionFill: HTMLDivElement;
+  progressionLabel: HTMLSpanElement;
   shipStatus: HTMLDivElement;
   shipShieldFill: HTMLDivElement;
   shipShieldLabel: HTMLSpanElement;
@@ -68,7 +91,11 @@ export class GameUi {
   startButton: HTMLButtonElement;
   quitButton: HTMLButtonElement;
   highScoreLine: HTMLDivElement;
+  levelUpOverlay: HTMLDivElement;
+  levelUpTitle: HTMLHeadingElement;
+  levelUpChoices: HTMLDivElement;
   enemyTrackerElements = new Map<number, HTMLDivElement>();
+  levelChoiceHandler: ((choiceIndex: number) => void) | null = null;
 
   constructor(container: HTMLElement) {
     this.root = document.createElement("div");
@@ -120,6 +147,34 @@ export class GameUi {
       "Heat max marker label element not found.",
     );
     this.root.append(this.heatGauge);
+
+    this.progressionWidget = document.createElement("div");
+    this.progressionWidget.className = "progression-widget";
+    this.progressionWidget.innerHTML = `
+      <span class="progression-level">1</span>
+      <div class="progression-bar">
+        <div class="progression-label-row">
+          <span class="progression-name">XP</span>
+          <span class="progression-value">0 / 0</span>
+        </div>
+        <div class="progression-track">
+          <div class="progression-fill"></div>
+        </div>
+      </div>
+    `;
+    this.progressionLevel = requireElement(
+      this.progressionWidget.querySelector<HTMLSpanElement>(".progression-level"),
+      "Progression level element not found.",
+    );
+    this.progressionFill = requireElement(
+      this.progressionWidget.querySelector<HTMLDivElement>(".progression-fill"),
+      "Progression fill element not found.",
+    );
+    this.progressionLabel = requireElement(
+      this.progressionWidget.querySelector<HTMLSpanElement>(".progression-value"),
+      "Progression value element not found.",
+    );
+    this.root.append(this.progressionWidget);
 
     this.afterburnerGauge = document.createElement("div");
     this.afterburnerGauge.className = "afterburner-gauge";
@@ -211,7 +266,19 @@ export class GameUi {
     this.quitButton.textContent = "Quit";
     panel.append(this.quitButton);
 
+    this.levelUpOverlay = document.createElement("div");
+    this.levelUpOverlay.className = "levelup-overlay";
+    this.levelUpOverlay.hidden = true;
+    this.levelUpOverlay.innerHTML = `
+      <div class="levelup-panel">
+        <div class="levelup-kicker">Level Up</div>
+        <h2 class="levelup-title">Level 2</h2>
+        <div class="levelup-choices"></div>
+      </div>
+    `;
+
     this.root.append(this.menu);
+    this.root.append(this.levelUpOverlay);
     container.append(this.root);
 
     this.menuTitle = requireElement(
@@ -221,6 +288,14 @@ export class GameUi {
     this.menuCopy = requireElement(
       panel.querySelector<HTMLParagraphElement>(".menu-copy"),
       "Menu copy element not found.",
+    );
+    this.levelUpTitle = requireElement(
+      this.levelUpOverlay.querySelector<HTMLHeadingElement>(".levelup-title"),
+      "Level-up title element not found.",
+    );
+    this.levelUpChoices = requireElement(
+      this.levelUpOverlay.querySelector<HTMLDivElement>(".levelup-choices"),
+      "Level-up choices element not found.",
     );
   }
 
@@ -237,12 +312,16 @@ export class GameUi {
     this.quitButton.addEventListener("click", handler);
   }
 
-  setMenuState(buttonLabel: string, highScore: number, copy?: string): void {
+  onLevelChoice(handler: (choiceIndex: number) => void): void {
+    this.levelChoiceHandler = handler;
+  }
+
+  setMenuState(buttonLabel: string, highXp: number, copy?: string): void {
     this.menu.hidden = false;
     this.menuTitle.textContent = "Bastardoids";
     this.menuCopy.textContent = copy ?? DEFAULT_MENU_COPY;
     this.startButton.textContent = buttonLabel;
-    this.highScoreLine.textContent = `High score: ${highScore}`;
+    this.highScoreLine.textContent = `High score (XP): ${highXp}`;
   }
 
   hideMenu(): void {
@@ -254,8 +333,11 @@ export class GameUi {
   }
 
   updateHud(snapshot: HudSnapshot): void {
-    const state = snapshot.running ? "Flight" : "Menu";
-    this.shipStatus.hidden = !snapshot.running;
+    this.shipStatus.hidden = !snapshot.gameplayVisible;
+    this.crosshair.hidden = !snapshot.crosshairVisible;
+    this.progressionWidget.hidden = !snapshot.gameplayVisible;
+    this.heatGauge.hidden = !snapshot.gameplayVisible;
+    this.afterburnerGauge.hidden = !snapshot.gameplayVisible;
 
     const performanceStats = snapshot.performance
       ? `
@@ -266,13 +348,23 @@ export class GameUi {
       : "";
 
     this.hud.innerHTML = `
-      <span>Score ${snapshot.score}</span>
-      <span>Status ${state}</span>
-      <span>High ${snapshot.highScore}</span>
+      <span>Scrap ${snapshot.scrap}</span>
+      <span>Status ${snapshot.statusLabel}</span>
+      <span>Best XP ${snapshot.highXp}</span>
       <span>X vel ${snapshot.velocityX.toFixed(1)}</span>
       <span>Z vel ${snapshot.velocityZ.toFixed(1)}</span>
       ${performanceStats}
     `;
+  }
+
+  updateProgression(snapshot: ProgressionSnapshot): void {
+    const xpSpan = Math.max(snapshot.nextLevelXp - snapshot.levelStartXp, 1);
+    const withinLevelXp = snapshot.currentXp - snapshot.levelStartXp;
+    const progressPercent = Math.max(0, Math.min((withinLevelXp / xpSpan) * 100, 100));
+
+    this.progressionLevel.textContent = `${snapshot.level}`;
+    this.progressionFill.style.width = `${progressPercent}%`;
+    this.progressionLabel.textContent = `${snapshot.currentXp} / ${snapshot.nextLevelXp}`;
   }
 
   updateShipStatus(snapshot: ShipStatusSnapshot): void {
@@ -367,6 +459,40 @@ export class GameUi {
     }
   }
 
+  showLevelUp(level: number, choices: LevelUpChoiceSnapshot[]): void {
+    this.levelUpOverlay.hidden = false;
+    this.levelUpTitle.textContent = `Level ${level}`;
+    this.levelUpChoices.replaceChildren();
+
+    choices.forEach((choice, index) => {
+      const button = document.createElement("button");
+      button.className = "levelup-choice";
+      button.type = "button";
+      const keyHint =
+        choice.kind === "active" && choice.activeKey
+          ? ` · ${this.formatActiveKey(choice.activeKey)}`
+          : "";
+      button.innerHTML = `
+        <div class="levelup-choice-meta">
+          <span class="levelup-choice-index">${index + 1}</span>
+          <span class="levelup-choice-kind">${choice.kind}${keyHint}</span>
+        </div>
+        <h3 class="levelup-choice-name">${choice.name}</h3>
+        <div class="levelup-choice-tier">
+          Tier ${choice.currentTier} -> ${choice.nextTier} / ${choice.maxTier}
+        </div>
+        <p class="levelup-choice-description">${choice.description}</p>
+      `;
+      button.addEventListener("click", () => this.levelChoiceHandler?.(index));
+      this.levelUpChoices.append(button);
+    });
+  }
+
+  hideLevelUp(): void {
+    this.levelUpOverlay.hidden = true;
+    this.levelUpChoices.replaceChildren();
+  }
+
   private getHeatColor(current: number, max: number): string {
     if (max <= 0) {
       return "#3dff79";
@@ -390,5 +516,9 @@ export class GameUi {
     }
 
     return "linear-gradient(180deg, #ffcf7b, #ff5c31 45%, #b30b0b)";
+  }
+
+  private formatActiveKey(code: string): string {
+    return code.startsWith("Key") ? code.slice(3) : code;
   }
 }
