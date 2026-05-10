@@ -1,11 +1,12 @@
 {
   "debugMode": true,
-  "showCollisionRings": false,
+  "showCollisionRings": true,
+  "showEnemyTactic": true,
+  "showEnemyIntercept": true,
   "showEmergencyVentEffect": true,
   "world": {
     "asteroidDistanceScreens": 5.0,
     "asteroidDespawnDistanceScreens": 7.0,
-    "asteroidWrapHeadingJitterDegrees": 8,
     "asteroidWrapPositionJitterFraction": 0.25,
     "cameraFovDegrees": 48,
     "cameraNear": 0.1,
@@ -41,15 +42,13 @@
     "maxSpeed": 32,
     "strafeMaxSpeed": 14,
     "shipModel": "ship1",
-    "weapon1": "laser",
+    "weapon1": "lightPlasmaCannon",
     "visualScale": 1.65,
     "turnRate": 2855.25,
     "turnDamping": 1215,
     "yawInertiaFactor": 1.0,
     "speedCapCurveExponent": 1.3,
-    "enginePowerMw": 100,
-    "muzzleOffsetForward": 2.8,
-    "muzzleOffsetSide": 1.25
+    "enginePowerMw": 100
   },
   "thrusters": {
     "maxParticles": 330,
@@ -89,6 +88,7 @@
   },
   "physics": {
     "restitution": 0.5,
+    "asteroid_restitution": 1.0,
     "separationBias": 0.02
   }
 }

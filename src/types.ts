@@ -24,8 +24,12 @@ export type ShipModelName =
   | "ship7"
   | "ship8"
   | "ship9";
-export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb";
-export type WeaponVisualName = "laserBolt" | "kineticTorpedo" | "plasmaOrb";
+export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb" | "lightPlasmaCannon";
+export type WeaponVisualName =
+  | "laserBolt"
+  | "kineticTorpedo"
+  | "plasmaOrb"
+  | "lightPlasmaCannon";
 export type SoundEffectName =
   | "afterburnerLoop"
   | "bump1"
@@ -33,6 +37,8 @@ export type SoundEffectName =
   | "explosion1"
   | "explosion2"
   | "laserHit"
+  | "plasmaCannonHit"
+  | "plasmaHit"
   | "laserShot1"
   | "plasmaOrbShot1"
   | "thrustersLongLoop";
@@ -59,7 +65,6 @@ export interface ShipModelDefinition {
 export interface WorldConfig {
   asteroidDistanceScreens: number;
   asteroidDespawnDistanceScreens: number;
-  asteroidWrapHeadingJitterDegrees: number;
   asteroidWrapPositionJitterFraction: number;
   cameraFovDegrees: number;
   cameraNear: number;
@@ -99,8 +104,6 @@ export interface ShipMovementConfig {
   yawInertiaFactor: number;
   speedCapCurveExponent: number;
   enginePowerMw?: number;
-  muzzleOffsetForward: number;
-  muzzleOffsetSide: number;
 }
 
 export interface PlayerConfig extends ShipMovementConfig {
@@ -113,15 +116,23 @@ export interface PlayerConfig extends ShipMovementConfig {
 export interface WeaponDefinition {
   name: WeaponName;
   visual: WeaponVisualName;
+  muzzleOffsetForward: number;
+  muzzleOffsetSide: number;
   fireSound?: SoundEffectName;
+  fireVolumePlayer?: number;
+  fireVolumeEnemy?: number;
   hitSound?: SoundEffectName;
   hitVolumeAgainstAsteroid?: number;
   hitVolumeAgainstShip?: number;
   hitSoundOffsetSeconds?: number;
   hitSoundPlaybackRate?: number;
+  hitSoundPlaybackRateMax?: number;
   heat: number;
   shotsPerSecond: number;
   speed: number;
+  initialSpeed?: number;
+  initialSpeedDuration?: number;
+  thrust?: number;
   lifetimeSeconds: number;
   damage: number;
   radius: number;
@@ -194,12 +205,15 @@ export interface SpawningConfig {
 
 export interface PhysicsConfig {
   restitution: number;
+  asteroid_restitution: number;
   separationBias: number;
 }
 
 export interface GameConfig {
   debugMode: boolean;
   showCollisionRings: boolean;
+  showEnemyTactic: boolean;
+  showEnemyIntercept: boolean;
   showEmergencyVentEffect: boolean;
   world: WorldConfig;
   player: PlayerConfig;
@@ -267,7 +281,10 @@ export interface EnemyPerceptionSnapshot {
   distanceToPlayer: number;
   relativeBearing: number;
   playerVelocity: Vector3;
+  closestApproachPlayerDistance: number;
+  playerCollisionRadius: number;
   nearestAsteroidThreatDistance: number;
+  nearestAsteroidThreatCollisionRadius: number;
   nearestAsteroidThreatPosition: Vector3 | null;
   nearestProjectileThreatDistance: number;
   nearestProjectileThreatPosition: Vector3 | null;
@@ -296,6 +313,8 @@ export interface EnemyBlackboard {
   spawnPoint: Vector3;
   perception: EnemyPerceptionSnapshot;
   screenTracking: EnemyScreenTrackingState;
+  debugInterceptDirection: Vector3;
+  debugHasInterceptPoint: boolean;
 }
 
 export interface ShipThrusterRuntime {
@@ -346,6 +365,11 @@ export interface ProjectileEntity {
   mesh: Group;
   position: Vector3;
   velocity: Vector3;
+  facingYaw: number;
+  propulsionDirection: Vector3 | null;
+  propulsionTargetSpeed: number | null;
+  propulsionThrust: number | null;
+  propulsionStartAt: number | null;
   expiresAt: number;
   alive: boolean;
 }

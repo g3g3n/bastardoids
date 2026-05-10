@@ -4,7 +4,7 @@ import { getAsteroidDefinition } from "../entities/asteroids/asteroidDefinitions
 import { getWeaponDefinition } from "../entities/projectiles/weaponDefinitions";
 import { getPrimaryFireWeapon } from "../entities/ships/loadout";
 import { getShipBasis } from "../entities/ships/shipController";
-import { createWeaponProjectileMesh } from "../visuals/Weapons";
+import { createWeaponProjectileMesh, updateWeaponProjectileMesh } from "../visuals/Weapons";
 import type {
   AsteroidEntity,
   CollisionBody,
@@ -112,8 +112,6 @@ export class CombatSystem {
     ship: PlayerState | EnemyShipEntity,
     shipConfig: {
       weapon1: ProjectileEntity["weapon"] | null;
-      muzzleOffsetForward: number;
-      muzzleOffsetSide: number;
     },
     context: FireContext,
   ): boolean {
@@ -131,32 +129,38 @@ export class CombatSystem {
     ship.heat = Math.min(ship.thermalCap, ship.heat + weaponHeatCost);
     if (weaponDefinition.fireSound) {
       this.audioSystem.playSfx(weaponDefinition.fireSound, {
-        volume: ship.faction === "enemy" ? 0.4 : 0.65,
+        volume:
+          ship.faction === "enemy"
+            ? weaponDefinition.fireVolumeEnemy ?? 0.4
+            : weaponDefinition.fireVolumePlayer ?? 0.65,
         playbackRateMin: 0.92,
         playbackRateMax: 1.06,
       });
     }
 
     const { forward, right } = getShipBasis(ship.yaw);
-    const baseVelocity = ship.velocity
-      .clone()
-      .add(forward.clone().multiplyScalar(weaponDefinition.speed));
-    const muzzleForward = forward.clone().multiplyScalar(shipConfig.muzzleOffsetForward);
+    const launchSpeed = weaponDefinition.initialSpeed ?? weaponDefinition.speed;
+    const baseVelocity = ship.velocity.clone().add(forward.clone().multiplyScalar(launchSpeed));
+    const muzzleForward = forward.clone().multiplyScalar(weaponDefinition.muzzleOffsetForward);
 
-    if (weaponDefinition.name === "plasmaOrb") {
+    if (
+      weaponDefinition.name === "plasmaOrb" ||
+      weaponDefinition.name === "lightPlasmaCannon"
+    ) {
       this.createProjectile(
         ship.id,
         ship.faction,
         weaponDefinition.name,
         ship.position.clone().add(muzzleForward),
         baseVelocity,
+        forward,
         this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
         context.elapsed,
       );
       return true;
     }
 
-    const sideOffset = right.clone().multiplyScalar(shipConfig.muzzleOffsetSide);
+    const sideOffset = right.clone().multiplyScalar(weaponDefinition.muzzleOffsetSide);
 
     this.createProjectile(
       ship.id,
@@ -164,6 +168,7 @@ export class CombatSystem {
       weaponDefinition.name,
       ship.position.clone().add(muzzleForward).add(sideOffset),
       baseVelocity.clone(),
+      forward,
       this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
       context.elapsed,
     );
@@ -173,6 +178,7 @@ export class CombatSystem {
       weaponDefinition.name,
       ship.position.clone().add(muzzleForward).sub(sideOffset),
       baseVelocity.clone(),
+      forward,
       this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
       context.elapsed,
     );
@@ -181,9 +187,11 @@ export class CombatSystem {
 
   updateProjectiles(context: CombatUpdateContext): void {
     for (const projectile of [...this.projectiles.values()]) {
+      this.updateProjectilePropulsion(projectile, context.elapsed, context.delta);
       projectile.position.addScaledVector(projectile.velocity, context.delta);
       projectile.mesh.position.copy(projectile.position);
-      projectile.mesh.rotation.y = Math.atan2(projectile.velocity.x, projectile.velocity.z);
+      projectile.mesh.rotation.y = projectile.facingYaw;
+      updateWeaponProjectileMesh(projectile.mesh, context.delta, context.elapsed);
 
       if (context.elapsed >= projectile.expiresAt) {
         this.destroyProjectile(projectile);
@@ -274,13 +282,15 @@ export class CombatSystem {
     weaponName: ProjectileEntity["weapon"],
     position: THREE.Vector3,
     velocity: THREE.Vector3,
+    launchDirection: THREE.Vector3,
     lifetimeSeconds: number,
     elapsed: number,
   ): ProjectileEntity {
     const weaponDefinition = getWeaponDefinition(weaponName);
     const mesh = createWeaponProjectileMesh(weaponDefinition);
     mesh.position.copy(position);
-    mesh.rotation.y = Math.atan2(velocity.x, velocity.z);
+    const facingYaw = Math.atan2(launchDirection.x, launchDirection.z);
+    mesh.rotation.y = facingYaw;
 
     const projectile: ProjectileEntity = {
       id: this.callbacks.allocateId(),
@@ -294,6 +304,14 @@ export class CombatSystem {
       mesh,
       position: position.clone(),
       velocity: velocity.clone(),
+      facingYaw,
+      propulsionDirection: weaponDefinition.thrust ? launchDirection.clone() : null,
+      propulsionTargetSpeed: weaponDefinition.thrust ? weaponDefinition.speed : null,
+      propulsionThrust: weaponDefinition.thrust ?? null,
+      propulsionStartAt:
+        weaponDefinition.thrust && weaponDefinition.initialSpeedDuration !== undefined
+          ? elapsed + weaponDefinition.initialSpeedDuration
+          : null,
       expiresAt: elapsed + lifetimeSeconds,
       alive: true,
     };
@@ -328,7 +346,8 @@ export class CombatSystem {
       volume: hitVolume ?? 1,
       offsetSeconds: weaponDefinition.hitSoundOffsetSeconds,
       playbackRateMin: weaponDefinition.hitSoundPlaybackRate,
-      playbackRateMax: weaponDefinition.hitSoundPlaybackRate,
+      playbackRateMax:
+        weaponDefinition.hitSoundPlaybackRateMax ?? weaponDefinition.hitSoundPlaybackRate,
     });
   }
 
@@ -400,6 +419,33 @@ export class CombatSystem {
         (tangentialSpeed * projectile.mass) / Math.max(target.mass * target.radius, 0.001);
       target.rotationSpeed += THREE.MathUtils.clamp(spinImpulse, -1.5, 1.5);
     }
+  }
+
+  private updateProjectilePropulsion(
+    projectile: ProjectileEntity,
+    elapsed: number,
+    delta: number,
+  ): void {
+    if (
+      projectile.propulsionDirection === null ||
+      projectile.propulsionTargetSpeed === null ||
+      projectile.propulsionThrust === null ||
+      projectile.propulsionStartAt === null ||
+      elapsed < projectile.propulsionStartAt
+    ) {
+      return;
+    }
+
+    const forwardSpeed = projectile.velocity.dot(projectile.propulsionDirection);
+    if (forwardSpeed >= projectile.propulsionTargetSpeed) {
+      return;
+    }
+
+    const speedDelta = Math.min(
+      projectile.propulsionThrust * delta,
+      projectile.propulsionTargetSpeed - forwardSpeed,
+    );
+    projectile.velocity.addScaledVector(projectile.propulsionDirection, speedDelta);
   }
 
   private applyDamageToEntity(

@@ -5,6 +5,8 @@ import explosion1Url from "../assets/sfx/explosion-1.mp3";
 import explosion2Url from "../assets/sfx/explosion-2.mp3";
 import laserHitUrl from "../assets/sfx/laser-hit.mp3";
 import laserShot1Url from "../assets/sfx/laser-shot-1.mp3";
+import plasmaCannonHitUrl from "../assets/sfx/plasmaCannon-hit.mp3";
+import plasmaHitUrl from "../assets/sfx/plasma-hit.mp3";
 import plasmaOrbShot1Url from "../assets/sfx/plasmaOrb-shot-1.mp3";
 import thrustersLongLoopUrl from "../assets/sfx/thrusters-long-loop.mp3";
 import type { SoundEffectName } from "../types";
@@ -31,6 +33,8 @@ const SFX_ASSET_URLS: Record<SoundEffectName, string> = {
   explosion2: explosion2Url,
   laserHit: laserHitUrl,
   laserShot1: laserShot1Url,
+  plasmaCannonHit: plasmaCannonHitUrl,
+  plasmaHit: plasmaHitUrl,
   plasmaOrbShot1: plasmaOrbShot1Url,
   thrustersLongLoop: thrustersLongLoopUrl,
 };

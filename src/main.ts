@@ -77,10 +77,15 @@ const ENEMY_THRUSTER_AUDIO_VOLUME = 0.55;
 const ENEMY_THRUSTER_AUDIO_PITCH = 1.35;
 const ENEMY_TRACK_PERSIST_SECONDS = 30;
 const ENEMY_TRACK_MAX_DISTANCE = 400;
+const ENEMY_TRACK_AUTO_MARK_RADIUS = 190;
 const ENEMY_TRACK_EDGE_NDC_X = 0.92;
 const ENEMY_TRACK_EDGE_NDC_Y = 0.82;
 const COLLISION_RING_COLOR = 0x3dff79;
 const COLLISION_RING_Y_OFFSET = 0.12;
+const ENEMY_TACTIC_LABEL_SCREEN_OFFSET_PX = 18;
+const ENEMY_INTERCEPT_LINE_LENGTH = 150;
+const ENEMY_INTERCEPT_LINE_COLOR = 0xff5b5b;
+const ENEMY_INTERCEPT_LINE_FORWARD = new THREE.Vector3(0, 0, 1);
 const ACTIVE_SKILL_KEYS = new Set<ActiveSkillKey>(["KeyQ", "KeyE", "KeyR", "KeyF", "KeyV"]);
 const PLAYER_ENEMY_PROXIMITY_XP_RADIUS = 300;
 const LEVEL_UP_PAUSE_DELAY_SECONDS = 1.2;
@@ -114,6 +119,8 @@ class BastardoidsApp {
   world = config.world;
   debugMode = config.debugMode;
   showCollisionRings = config.showCollisionRings;
+  showEnemyTactic = config.showEnemyTactic;
+  showEnemyIntercept = config.showEnemyIntercept;
   showEmergencyVentEffect = config.showEmergencyVentEffect;
   performanceMonitor = new PerformanceMonitor();
   playerConfig = config.player;
@@ -145,6 +152,16 @@ class BastardoidsApp {
     depthTest: false,
   });
   collisionRings = new Map<number, THREE.LineLoop>();
+  enemyInterceptRoot = new THREE.Group();
+  enemyInterceptGeometry = this.buildEnemyInterceptGeometry();
+  enemyInterceptMaterial = new THREE.LineBasicMaterial({
+    color: ENEMY_INTERCEPT_LINE_COLOR,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    depthTest: false,
+  });
+  enemyInterceptLines = new Map<number, THREE.Line>();
   nextId = 1;
   phase: GamePhase = "menu";
   highestXp = loadHighestXp();
@@ -214,6 +231,7 @@ class BastardoidsApp {
     this.scene.add(this.worldScenery.root);
     this.scene.add(this.explosionSystem.root);
     this.scene.add(this.collisionRingRoot);
+    this.scene.add(this.enemyInterceptRoot);
     this.thrusterParticles = new ThrusterParticleSystem(
       this.scene,
       this.thrusterConfig,
@@ -239,6 +257,13 @@ class BastardoidsApp {
     }
 
     return new THREE.BufferGeometry().setFromPoints(points);
+  }
+
+  buildEnemyInterceptGeometry(): THREE.BufferGeometry {
+    return new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, 1),
+    ]);
   }
 
   attachCollisionRing(entity: {
@@ -284,6 +309,59 @@ class BastardoidsApp {
 
     this.collisionRings.delete(entityId);
     this.collisionRingRoot.remove(ring);
+  }
+
+  syncEnemyInterceptDebug(): void {
+    if (!this.showEnemyIntercept || !this.isGameplayVisible()) {
+      this.clearEnemyInterceptLines();
+      return;
+    }
+
+    const activeIds = new Set<number>();
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive || !enemy.blackboard.debugHasInterceptPoint) {
+        continue;
+      }
+
+      activeIds.add(enemy.id);
+      let line = this.enemyInterceptLines.get(enemy.id);
+      if (!line) {
+        line = new THREE.Line(this.enemyInterceptGeometry, this.enemyInterceptMaterial);
+        line.renderOrder = 31;
+        this.enemyInterceptLines.set(enemy.id, line);
+        this.enemyInterceptRoot.add(line);
+      }
+
+      line.position.copy(enemy.position);
+      line.scale.set(1, 1, ENEMY_INTERCEPT_LINE_LENGTH);
+      line.quaternion.setFromUnitVectors(
+        ENEMY_INTERCEPT_LINE_FORWARD,
+        enemy.blackboard.debugInterceptDirection,
+      );
+    }
+
+    for (const enemyId of [...this.enemyInterceptLines.keys()]) {
+      if (activeIds.has(enemyId)) {
+        continue;
+      }
+
+      this.removeEnemyInterceptLine(enemyId);
+    }
+  }
+
+  removeEnemyInterceptLine(enemyId: number): void {
+    const line = this.enemyInterceptLines.get(enemyId);
+    if (!line) {
+      return;
+    }
+
+    this.enemyInterceptLines.delete(enemyId);
+    this.enemyInterceptRoot.remove(line);
+  }
+
+  clearEnemyInterceptLines(): void {
+    this.enemyInterceptLines.clear();
+    this.enemyInterceptRoot.clear();
   }
 
   bindEvents(): void {
@@ -417,6 +495,9 @@ class BastardoidsApp {
     this.primaryMouseDown = false;
     this.levelUpPauseAt = null;
     this.ui.setGameplayCursorHidden(false);
+    this.clearEnemyInterceptLines();
+    this.ui.updateEnemyTrackers([]);
+    this.ui.updateEnemyTactics([]);
     if (this.progression.totalXp > this.highestXp) {
       this.highestXp = this.progression.totalXp;
       storeHighestXp(this.highestXp);
@@ -710,6 +791,9 @@ class BastardoidsApp {
       enemies: [...this.enemies.values()],
       resolvedPlayerStats: this.resolvedPlayerStats,
     });
+    for (const projectile of this.combat.getProjectilesSnapshot()) {
+      this.syncCollisionRing(projectile);
+    }
     this.handleObjectCollisions();
     this.cleanupFarObjects();
     this.updateCamera(delta, false);
@@ -718,6 +802,7 @@ class BastardoidsApp {
     }
 
     this.updateShieldEffect();
+    this.syncEnemyInterceptDebug();
     this.maybePauseForLevelUp();
     this.updateHud();
     this.updateLoopedMovementAudio();
@@ -882,11 +967,14 @@ class BastardoidsApp {
         const relativeVelocity = second.velocity.clone().sub(first.velocity);
         const separatingSpeed = relativeVelocity.dot(normal);
         const impactCollision = separatingSpeed < 0;
+        const restitution =
+          first.type === "asteroid" && second.type === "asteroid"
+            ? this.physicsConfig.asteroid_restitution
+            : this.physicsConfig.restitution;
 
         if (impactCollision) {
           const impulseMagnitude =
-            (-(1 + this.physicsConfig.restitution) * separatingSpeed) /
-            (1 / first.mass + 1 / second.mass);
+            (-(1 + restitution) * separatingSpeed) / (1 / first.mass + 1 / second.mass);
           const impulse = normal.clone().multiplyScalar(impulseMagnitude);
           first.velocity.addScaledVector(impulse, -1 / first.mass);
           second.velocity.addScaledVector(impulse, 1 / second.mass);
@@ -1005,6 +1093,7 @@ class BastardoidsApp {
       nextLevelXp: xpProgress.nextLevelXp,
     });
     this.ui.updateEnemyTrackers(this.buildEnemyTrackerSnapshots());
+    this.ui.updateEnemyTactics(this.buildEnemyTacticSnapshots());
     this.ui.updateShipStatus({
       hull: this.player?.hull ?? 0,
       maxHull: this.player?.maxHull ?? this.playerConfig.hull,
@@ -1054,11 +1143,17 @@ class BastardoidsApp {
         enemy.position.z - this.player.position.z,
       );
       const tracking = enemy.blackboard.screenTracking;
+      const withinTrackerAutoMarkRadius = distanceUnits <= ENEMY_TRACK_AUTO_MARK_RADIUS;
 
       if (visibility.visible) {
         tracking.hasBeenSeen = true;
         tracking.lastSeenAt = this.elapsed;
         continue;
+      }
+
+      if (withinTrackerAutoMarkRadius) {
+        tracking.hasBeenSeen = true;
+        tracking.lastSeenAt = this.elapsed;
       }
 
       const trackingExpired =
@@ -1078,6 +1173,44 @@ class BastardoidsApp {
         screenY: ((1 - clampedNdc.y) * this.viewport.y) / 2,
         angleDegrees: THREE.MathUtils.radToDeg(Math.atan2(-clampedNdc.y, clampedNdc.x)),
         distanceUnits,
+      });
+    }
+
+    return snapshots;
+  }
+
+  buildEnemyTacticSnapshots(): Array<{
+    enemyId: number;
+    screenX: number;
+    screenY: number;
+    tactic: string;
+  }> {
+    if (!this.showEnemyTactic || !this.isGameplayVisible()) {
+      return [];
+    }
+
+    const snapshots: Array<{
+      enemyId: number;
+      screenX: number;
+      screenY: number;
+      tactic: string;
+    }> = [];
+
+    for (const enemy of this.enemies.values()) {
+      if (!enemy.alive) {
+        continue;
+      }
+
+      const visibility = this.getEnemyScreenVisibility(enemy);
+      if (!visibility.visible) {
+        continue;
+      }
+
+      snapshots.push({
+        enemyId: enemy.id,
+        screenX: ((visibility.ndc.x + 1) * this.viewport.x) / 2,
+        screenY: ((1 - visibility.ndc.y) * this.viewport.y) / 2 - ENEMY_TACTIC_LABEL_SCREEN_OFFSET_PX,
+        tactic: enemy.blackboard.currentTactic,
       });
     }
 
@@ -1301,13 +1434,8 @@ class BastardoidsApp {
 
     const speed = asteroid.velocity.length();
     if (speed > 0.001) {
-      const jitterRadians = THREE.MathUtils.degToRad(this.world.asteroidWrapHeadingJitterDegrees);
-      const headingJitter = (Math.random() * 2 - 1) * jitterRadians;
-      asteroid.velocity
-        .setY(0)
-        .normalize()
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), headingJitter)
-        .multiplyScalar(speed);
+      const headingRadians = Math.random() * Math.PI * 2;
+      asteroid.velocity.set(Math.sin(headingRadians) * speed, 0, Math.cos(headingRadians) * speed);
     }
   }
 
@@ -1332,6 +1460,7 @@ class BastardoidsApp {
     this.enemies.delete(enemy.id);
     this.enemyShields.delete(enemy.id);
     this.removeCollisionRing(enemy.id);
+    this.removeEnemyInterceptLine(enemy.id);
     this.audioSystem.stopLoop(this.getEnemyThrusterLoopId(enemy.id));
     if (emitExplosion) {
       this.playExplosionSfx();
@@ -1354,6 +1483,9 @@ class BastardoidsApp {
     this.enemyShields.clear();
     this.collisionRings.clear();
     this.collisionRingRoot.clear();
+    this.clearEnemyInterceptLines();
+    this.ui.updateEnemyTrackers([]);
+    this.ui.updateEnemyTactics([]);
 
     if (this.player) {
       this.scene.remove(this.player.mesh);

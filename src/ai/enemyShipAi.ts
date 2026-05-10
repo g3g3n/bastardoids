@@ -30,6 +30,11 @@ const IDLE_INTENT: ShipControlIntent = {
   firePrimary: false,
 };
 
+const INTERCEPT_TIME_SAMPLES = 48;
+const INTERCEPT_REFINE_STEPS = 10;
+const PLAYER_CLOSEST_APPROACH_BUFFER = 2;
+const ASTEROID_CLOSEST_APPROACH_BUFFER = 2;
+
 export function updateEnemyAi(
   enemy: EnemyShipEntity,
   context: EnemyAiContext,
@@ -106,7 +111,10 @@ function computeEnemyPerception(
       distanceToPlayer: Infinity,
       relativeBearing: 0,
       playerVelocity: new THREE.Vector3(),
+      closestApproachPlayerDistance: Infinity,
+      playerCollisionRadius: 0,
       nearestAsteroidThreatDistance: Infinity,
+      nearestAsteroidThreatCollisionRadius: 0,
       nearestAsteroidThreatPosition: null,
       nearestProjectileThreatDistance: Infinity,
       nearestProjectileThreatPosition: null,
@@ -122,6 +130,7 @@ function computeEnemyPerception(
   const relativeBearing = wrapAngle(Math.atan2(toPlayer.x, toPlayer.z) - enemy.yaw);
 
   let nearestAsteroidThreatDistance = Infinity;
+  let nearestAsteroidThreatCollisionRadius = 0;
   let nearestAsteroidThreatPosition: THREE.Vector3 | null = null;
   let timeToCollisionAsteroid = Infinity;
   for (const asteroid of context.asteroids) {
@@ -138,6 +147,7 @@ function computeEnemyPerception(
     );
     if (approach.distance < nearestAsteroidThreatDistance) {
       nearestAsteroidThreatDistance = approach.distance;
+      nearestAsteroidThreatCollisionRadius = enemy.radius + asteroid.radius;
       nearestAsteroidThreatPosition = asteroid.position.clone();
       timeToCollisionAsteroid = approach.time;
     }
@@ -189,7 +199,10 @@ function computeEnemyPerception(
     distanceToPlayer,
     relativeBearing,
     playerVelocity: player.velocity.clone(),
+    closestApproachPlayerDistance: playerApproach.distance,
+    playerCollisionRadius: enemy.radius + player.radius,
     nearestAsteroidThreatDistance,
+    nearestAsteroidThreatCollisionRadius,
     nearestAsteroidThreatPosition,
     nearestProjectileThreatDistance,
     nearestProjectileThreatPosition,
@@ -212,15 +225,15 @@ function chooseEmergencyTactic(
   }
 
   const objectCollisionThreat =
-    perception.timeToCollisionAsteroid < 1.7 ||
+    (perception.timeToCollisionAsteroid < 1.7 && hasAsteroidClosestApproachCollisionRisk(perception)) ||
     perception.nearestEnemySeparationDistance < enemy.radius * 3.25;
   if (objectCollisionThreat) {
     return "evadeObjectCollision";
   }
 
   const playerCollisionThreat =
-    perception.distanceToPlayer < enemy.blackboard.preferredRange * 0.55 ||
-    perception.timeToCollisionPlayer < 0.75;
+    perception.distanceToPlayer < enemy.blackboard.preferredRange * 0.50 ||
+    (perception.timeToCollisionPlayer < 0.65 && hasPlayerClosestApproachCollisionRisk(perception));
   return playerCollisionThreat ? "evadePlayerCollision" : null;
 }
 
@@ -245,8 +258,12 @@ function chooseEnemyTactic(
     1 - perception.nearestProjectileThreatDistance / Math.max(enemy.radius * 8, 1),
   );
   const collisionThreat = Math.max(
-    clamp01(1 - perception.timeToCollisionPlayer / 1.2),
-    clamp01(1 - perception.timeToCollisionAsteroid / 1.0),
+    hasPlayerClosestApproachCollisionRisk(perception)
+      ? clamp01(1 - perception.timeToCollisionPlayer / 1.2)
+      : 0,
+    hasAsteroidClosestApproachCollisionRisk(perception)
+      ? clamp01(1 - perception.timeToCollisionAsteroid / 1.0)
+      : 0,
     clamp01(1 - perception.nearestEnemySeparationDistance / Math.max(enemy.radius * 8, 1)),
   );
 
@@ -355,28 +372,47 @@ function buildEnemyControlIntent(
   const aimPoint =
     weapon !== null && enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius
       ? (() => {
-          const fullLeadPoint =
-            solveInterceptPoint(
-              enemy.position,
-              enemy.velocity,
-              player.position,
-              player.velocity,
-              weapon.speed,
-            ) ?? player.position;
+          const solvedInterceptPoint = solveInterceptPoint(
+            enemy.position,
+            enemy.velocity,
+            player.position,
+            player.velocity,
+            weapon,
+          );
+          const fullLeadPoint = solvedInterceptPoint ?? player.position;
 
-          let leadFactor = 1;
-          if (
-            enemy.blackboard.currentTactic === "orbitLeft" ||
-            enemy.blackboard.currentTactic === "orbitRight"
-          ) {
-            leadFactor = 0.65;
-          } else if (enemy.blackboard.currentTactic === "holdRange") {
-            leadFactor = 0.70;
+          if (solvedInterceptPoint) {
+            enemy.blackboard.debugInterceptDirection
+              .copy(solvedInterceptPoint)
+              .sub(enemy.position)
+              .setY(0);
+            enemy.blackboard.debugHasInterceptPoint =
+              enemy.blackboard.debugInterceptDirection.lengthSq() > 0.0001;
+            if (enemy.blackboard.debugHasInterceptPoint) {
+              enemy.blackboard.debugInterceptDirection.normalize();
+            }
+          } else {
+            enemy.blackboard.debugHasInterceptPoint = false;
+          }
+
+          let leadFactor = 1.4;
+          if (weapon.name !== "kineticTorpedo") {
+            if (
+              enemy.blackboard.currentTactic === "orbitLeft" ||
+              enemy.blackboard.currentTactic === "orbitRight"
+            ) {
+              leadFactor = 0.85;
+            } else if (enemy.blackboard.currentTactic === "holdRange") {
+              leadFactor = 0.80;
+            }
           }
 
           return new THREE.Vector3().lerpVectors(player.position, fullLeadPoint, leadFactor);
         })()
-      : player.position;
+      : (() => {
+          enemy.blackboard.debugHasInterceptPoint = false;
+          return player.position;
+        })();
   const targetYaw = Math.atan2(aimPoint.x - enemy.position.x, aimPoint.z - enemy.position.z);
   const yawError = Math.abs(wrapAngle(targetYaw - enemy.yaw));
   const canFire =
@@ -489,7 +525,8 @@ function getObjectCollisionThreatPosition(
 ): THREE.Vector3 | null {
   const asteroidThreatActive =
     perception.nearestAsteroidThreatPosition !== null &&
-    perception.timeToCollisionAsteroid < 1.5;
+    perception.timeToCollisionAsteroid < 1.5 &&
+    hasAsteroidClosestApproachCollisionRisk(perception);
   const enemyThreatActive =
     perception.nearestEnemySeparationPosition !== null &&
     perception.nearestEnemySeparationDistance < enemy.radius * 3.25;
@@ -548,6 +585,25 @@ function getAvoidanceVector(
   }
 
   return desired;
+}
+
+function hasPlayerClosestApproachCollisionRisk(
+  perception: EnemyPerceptionSnapshot,
+): boolean {
+  return (
+    perception.closestApproachPlayerDistance <
+    perception.playerCollisionRadius + PLAYER_CLOSEST_APPROACH_BUFFER
+  );
+}
+
+function hasAsteroidClosestApproachCollisionRisk(
+  perception: EnemyPerceptionSnapshot,
+): boolean {
+  return (
+    perception.nearestAsteroidThreatCollisionRadius > 0 &&
+    perception.nearestAsteroidThreatDistance <
+      perception.nearestAsteroidThreatCollisionRadius + ASTEROID_CLOSEST_APPROACH_BUFFER
+  );
 }
 
 function getRepulsionVector(
@@ -624,38 +680,87 @@ function solveInterceptPoint(
   shooterVelocity: THREE.Vector3,
   targetPosition: THREE.Vector3,
   targetVelocity: THREE.Vector3,
-  projectileSpeed: number,
+  weapon: ReturnType<typeof getWeaponDefinition>,
 ): THREE.Vector3 | null {
   const relativePosition = planarVector(shooterPosition, targetPosition);
   const planarShooterVelocity = shooterVelocity.clone().setY(0);
   const planarTargetVelocity = targetVelocity.clone().setY(0);
   const relativeTargetVelocity = planarTargetVelocity.clone().sub(planarShooterVelocity);
-  const a = relativeTargetVelocity.lengthSq() - projectileSpeed * projectileSpeed;
-  const b = 2 * relativePosition.dot(relativeTargetVelocity);
-  const c = relativePosition.lengthSq();
-
-  let time = 0;
-  if (Math.abs(a) < 0.0001) {
-    if (Math.abs(b) < 0.0001) {
-      return targetPosition.clone();
-    }
-    time = -c / b;
-  } else {
-    const discriminant = b * b - 4 * a * c;
-    if (discriminant < 0) {
-      return null;
-    }
-    const root = Math.sqrt(discriminant);
-    const t1 = (-b - root) / (2 * a);
-    const t2 = (-b + root) / (2 * a);
-    time = Math.min(t1 > 0 ? t1 : Infinity, t2 > 0 ? t2 : Infinity);
+  if (relativePosition.lengthSq() <= 0.0001) {
+    return targetPosition.clone();
   }
 
-  if (!Number.isFinite(time) || time < 0) {
-    return null;
+  let previousTime = 0;
+  let previousDifference = -relativePosition.length();
+
+  for (let sampleIndex = 1; sampleIndex <= INTERCEPT_TIME_SAMPLES; sampleIndex += 1) {
+    const sampleTime = (weapon.lifetimeSeconds * sampleIndex) / INTERCEPT_TIME_SAMPLES;
+    const sampleDifference = getProjectileTravelDistanceAtTime(weapon, sampleTime) -
+      getRelativeTargetDistanceAtTime(relativePosition, relativeTargetVelocity, sampleTime);
+
+    if (sampleDifference >= 0) {
+      let lowTime = previousTime;
+      let highTime = sampleTime;
+
+      for (let refineStep = 0; refineStep < INTERCEPT_REFINE_STEPS; refineStep += 1) {
+        const midTime = (lowTime + highTime) * 0.5;
+        const midDifference = getProjectileTravelDistanceAtTime(weapon, midTime) -
+          getRelativeTargetDistanceAtTime(relativePosition, relativeTargetVelocity, midTime);
+
+        if (midDifference >= 0) {
+          highTime = midTime;
+        } else {
+          lowTime = midTime;
+        }
+      }
+
+      return targetPosition.clone().addScaledVector(planarTargetVelocity, highTime);
+    }
+
+    previousTime = sampleTime;
+    previousDifference = sampleDifference;
   }
 
-  return targetPosition.clone().addScaledVector(planarTargetVelocity, time);
+  return previousDifference >= 0
+    ? targetPosition.clone().addScaledVector(planarTargetVelocity, previousTime)
+    : null;
+}
+
+function getRelativeTargetDistanceAtTime(
+  relativePosition: THREE.Vector3,
+  relativeTargetVelocity: THREE.Vector3,
+  time: number,
+): number {
+  return relativePosition.clone().addScaledVector(relativeTargetVelocity, time).length();
+}
+
+function getProjectileTravelDistanceAtTime(
+  weapon: ReturnType<typeof getWeaponDefinition>,
+  time: number,
+): number {
+  const clampedTime = THREE.MathUtils.clamp(time, 0, weapon.lifetimeSeconds);
+  const initialSpeed = weapon.initialSpeed ?? weapon.speed;
+  const initialDuration = Math.max(weapon.initialSpeedDuration ?? 0, 0);
+  const thrust = Math.max(weapon.thrust ?? 0, 0);
+
+  if (clampedTime <= initialDuration || thrust <= 0 || weapon.speed <= initialSpeed) {
+    return initialSpeed * clampedTime;
+  }
+
+  const timeAfterInitial = clampedTime - initialDuration;
+  const accelerationDuration = (weapon.speed - initialSpeed) / thrust;
+  const clampedAccelerationTime = Math.min(timeAfterInitial, accelerationDuration);
+  const distanceBeforeAcceleration = initialSpeed * initialDuration;
+  const acceleratedDistance =
+    initialSpeed * clampedAccelerationTime +
+    0.5 * thrust * clampedAccelerationTime * clampedAccelerationTime;
+
+  if (timeAfterInitial <= accelerationDuration) {
+    return distanceBeforeAcceleration + acceleratedDistance;
+  }
+
+  const cruiseTime = timeAfterInitial - accelerationDuration;
+  return distanceBeforeAcceleration + acceleratedDistance + weapon.speed * cruiseTime;
 }
 
 function closestApproach(

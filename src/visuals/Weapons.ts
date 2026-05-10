@@ -1,6 +1,88 @@
 import * as THREE from "three";
 import type { WeaponDefinition } from "../types";
 
+interface WeaponProjectileUserData {
+  update?: (delta: number, elapsed: number) => void;
+}
+
+function createPlasmaSpriteTexture(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return new THREE.Texture(canvas);
+  }
+
+  const center = size / 2;
+  const gradient = context.createRadialGradient(center, center, 0, center, center, center);
+  gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+  gradient.addColorStop(0.28, "rgba(188, 236, 255, 0.9)");
+  gradient.addColorStop(0.62, "rgba(90, 186, 255, 0.34)");
+  gradient.addColorStop(1, "rgba(90, 186, 255, 0)");
+
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createPlasmaSpriteMaterial(
+  map: THREE.Texture,
+  color: THREE.ColorRepresentation,
+  opacity: number,
+): THREE.SpriteMaterial {
+  return new THREE.SpriteMaterial({
+    map,
+    color,
+    transparent: true,
+    opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+}
+
+function createOrbSprite(
+  material: THREE.SpriteMaterial,
+  width: number,
+  height: number = width,
+): THREE.Sprite {
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(width, height, 1);
+  return sprite;
+}
+
+const plasmaSpriteTexture = createPlasmaSpriteTexture();
+const lightPlasmaCannonCoreMaterial = createPlasmaSpriteMaterial(
+  plasmaSpriteTexture,
+  0xe8fbff,
+  0.96,
+);
+const lightPlasmaCannonAuraMaterial = createPlasmaSpriteMaterial(
+  plasmaSpriteTexture,
+  0x4ebfff,
+  0.42,
+);
+const lightPlasmaCannonHaloMaterial = createPlasmaSpriteMaterial(
+  plasmaSpriteTexture,
+  0x2297ff,
+  0.2,
+);
+const lightPlasmaCannonOrbiterCoreMaterial = createPlasmaSpriteMaterial(
+  plasmaSpriteTexture,
+  0xcaf6ff,
+  0.98,
+);
+const lightPlasmaCannonOrbiterAuraMaterial = createPlasmaSpriteMaterial(
+  plasmaSpriteTexture,
+  0x63d6ff,
+  0.58,
+);
+
 function createLaserBoltMesh(weapon: WeaponDefinition): THREE.Group {
   const mesh = new THREE.Group();
   const geometry = new THREE.CylinderGeometry(
@@ -179,9 +261,55 @@ function createPlasmaOrbMesh(weapon: WeaponDefinition): THREE.Group {
   return mesh;
 }
 
+function createLightPlasmaCannonMesh(weapon: WeaponDefinition): THREE.Group {
+  const mesh = new THREE.Group();
+  const halo = createOrbSprite(lightPlasmaCannonHaloMaterial, weapon.visualWidth * 2.75);
+  const aura = createOrbSprite(lightPlasmaCannonAuraMaterial, weapon.visualWidth * 2.1);
+  const core = createOrbSprite(lightPlasmaCannonCoreMaterial, weapon.visualWidth * 1.28);
+  mesh.add(halo);
+  mesh.add(aura);
+  mesh.add(core);
+
+  const orbitGroup = new THREE.Group();
+  const orbitRadius = 3;
+  const orbiterScale = weapon.visualWidth * 0.82;
+
+  for (const direction of [-1, 1] as const) {
+    const orbiter = new THREE.Group();
+    orbiter.position.x = orbitRadius * direction;
+    orbiter.add(createOrbSprite(lightPlasmaCannonOrbiterAuraMaterial, orbiterScale));
+    orbiter.add(createOrbSprite(lightPlasmaCannonOrbiterCoreMaterial, orbiterScale * 0.48));
+    orbitGroup.add(orbiter);
+  }
+
+  mesh.add(orbitGroup);
+
+  const baseHaloScale = halo.scale.x;
+  const baseAuraScale = aura.scale.x;
+  const baseCoreScale = core.scale.x;
+  const orbitPhase = Math.random() * Math.PI * 2;
+  const pulseOffset = Math.random() * Math.PI * 2;
+  const orbitSpeed = THREE.MathUtils.randFloat(7.2, 8.8);
+
+  (mesh.userData as WeaponProjectileUserData).update = (_delta, elapsed) => {
+    orbitGroup.rotation.z = orbitPhase + elapsed * orbitSpeed;
+
+    const pulse = Math.sin(elapsed * 11 + pulseOffset);
+    halo.scale.setScalar(baseHaloScale * (1 + pulse * 0.08));
+    aura.scale.setScalar(baseAuraScale * (1 + pulse * 0.06));
+    core.scale.setScalar(baseCoreScale * (1 + pulse * 0.04));
+  };
+
+  return mesh;
+}
+
 export function createWeaponProjectileMesh(weapon: WeaponDefinition): THREE.Group {
   if (weapon.visual === "kineticTorpedo") {
     return createKineticTorpedoMesh(weapon);
+  }
+
+  if (weapon.visual === "lightPlasmaCannon") {
+    return createLightPlasmaCannonMesh(weapon);
   }
 
   if (weapon.visual === "plasmaOrb") {
@@ -189,4 +317,12 @@ export function createWeaponProjectileMesh(weapon: WeaponDefinition): THREE.Grou
   }
 
   return createLaserBoltMesh(weapon);
+}
+
+export function updateWeaponProjectileMesh(
+  mesh: THREE.Group,
+  delta: number,
+  elapsed: number,
+): void {
+  (mesh.userData as WeaponProjectileUserData).update?.(delta, elapsed);
 }

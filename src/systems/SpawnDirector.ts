@@ -13,7 +13,7 @@ import type {
 const T1_ENEMY_VARIANTS: readonly EnemyShipName[] = ["Hunter T", "Hunter L", "Hunter P"];
 const INITIAL_T1_ENEMY_PAIR_SPAWN_AT = 30;
 const T1_ENEMY_RESPAWN_CHECK_INTERVAL = 45;
-const T1_ENEMY_SPAWN_AXIS_DISTANCE = 400;
+const T1_ENEMY_SPAWN_AXIS_DISTANCE = 350;
 const T1_ENEMY_SPAWN_ORTHOGONAL_RANGE = 200;
 const T1_ENEMY_ACTIVE_CHECK_RANGE = 400;
 const INITIAL_ASTEROID_COUNT = 10;
@@ -63,13 +63,14 @@ export class SpawnDirector {
       const asteroidCfg = getAsteroidDefinition(size);
       const offset = this.getRandomInitialAsteroidOffset();
       const spawnPosition = player.position.clone().add(offset);
-      const toCenter = player.position.clone().sub(spawnPosition).setY(0).normalize();
-      const angleOffset = (Math.random() - 0.5) * (Math.PI / 2.2);
-      const velocity = toCenter
-        .applyAxisAngle(new THREE.Vector3(0, 1, 0), angleOffset)
-        .multiplyScalar(
-          asteroidCfg.minSpeed + Math.random() * (asteroidCfg.maxSpeed - asteroidCfg.minSpeed),
-        );
+      const headingRadians = Math.random() * Math.PI * 2;
+      const speed =
+        asteroidCfg.minSpeed + Math.random() * (asteroidCfg.maxSpeed - asteroidCfg.minSpeed);
+      const velocity = new THREE.Vector3(
+        Math.sin(headingRadians) * speed,
+        0,
+        Math.cos(headingRadians) * speed,
+      );
 
       createAsteroid(size, spawnPosition, velocity);
     }
@@ -108,7 +109,10 @@ export class SpawnDirector {
       return;
     }
 
-    if (this.countNearbyActiveEnemies(context.player, context.enemies) < 2) {
+    if (this.countNearbyActiveEnemies(context.player, context.enemies) < 1) {
+      this.spawnRandomT1EnemyAtOffset(context.player, context.spawnEnemy, this.getRandomT1EnemySpawnOffset());
+      this.spawnRandomT1EnemyAtOffset(context.player, context.spawnEnemy, this.getRandomT1EnemySpawnOffset());
+    } else if (this.countNearbyActiveEnemies(context.player, context.enemies) < 2) {
       this.spawnRandomT1EnemyAtOffset(context.player, context.spawnEnemy, this.getRandomT1EnemySpawnOffset());
     }
 
@@ -142,13 +146,14 @@ export class SpawnDirector {
 
     const size = this.getRandomAsteroidSize();
     const asteroidCfg = getAsteroidDefinition(size);
-    const toCenter = center.clone().sub(spawnPosition).setY(0).normalize();
-    const angleOffset = (Math.random() - 0.5) * (Math.PI / 2.2);
-    const velocity = toCenter
-      .applyAxisAngle(new THREE.Vector3(0, 1, 0), angleOffset)
-      .multiplyScalar(
-        asteroidCfg.minSpeed + Math.random() * (asteroidCfg.maxSpeed - asteroidCfg.minSpeed),
-      );
+    const headingRadians = Math.random() * Math.PI * 2;
+    const speed =
+      asteroidCfg.minSpeed + Math.random() * (asteroidCfg.maxSpeed - asteroidCfg.minSpeed);
+    const velocity = new THREE.Vector3(
+      Math.sin(headingRadians) * speed,
+      0,
+      Math.cos(headingRadians) * speed,
+    );
 
     context.createAsteroid(size, spawnPosition, velocity);
   }

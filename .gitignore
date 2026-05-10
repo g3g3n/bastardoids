@@ -1,5 +1,7 @@
 node_modules/
 dist/
+skills/
+_temp assets/
 
 .DS_Store
 Thumbs.db

@@ -21,15 +21,13 @@ const HUNTER_BASE_DEFINITION = {
   yawInertiaFactor: 1.0,
   speedCapCurveExponent: 1.3,
   enginePowerMw: 100,
-  muzzleOffsetForward: 3.64,
-  muzzleOffsetSide: 2.6,
   engageRadius: 350,
   fireRadius: 170,
   preferredRangeMin: 20,
   preferredRangeMax: 80,
   decisionInterval: 0.12,
   farDecisionInterval: 0.34,
-  aimToleranceDegrees: 10,
+  aimToleranceDegrees: 7.5,
   avoidanceWeight: 1.45,
   orbitWeight: 1.0,
   behindWeight: 0.95,
@@ -57,7 +55,7 @@ export const ENEMY_SHIP_DEFINITIONS = {
   "Hunter P": {
     ...HUNTER_BASE_DEFINITION,
     name: "Hunter P",
-    weapon1: "plasmaOrb",
+    weapon1: "lightPlasmaCannon",
   },
 } satisfies Record<EnemyShipName, EnemyShipDefinition>;
 

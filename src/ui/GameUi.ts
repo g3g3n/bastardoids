@@ -51,6 +51,13 @@ export interface EnemyTrackerSnapshot {
   distanceUnits: number;
 }
 
+export interface EnemyTacticSnapshot {
+  enemyId: number;
+  screenX: number;
+  screenY: number;
+  tactic: string;
+}
+
 export interface LevelUpChoiceSnapshot {
   name: string;
   kind: "passive" | "active";
@@ -82,6 +89,7 @@ export class GameUi {
   shipHullLabel: HTMLSpanElement;
   crosshair: HTMLDivElement;
   enemyTrackerLayer: HTMLDivElement;
+  enemyTacticLayer: HTMLDivElement;
   afterburnerGauge: HTMLDivElement;
   afterburnerFill: HTMLDivElement;
   afterburnerLabel: HTMLSpanElement;
@@ -95,6 +103,7 @@ export class GameUi {
   levelUpTitle: HTMLHeadingElement;
   levelUpChoices: HTMLDivElement;
   enemyTrackerElements = new Map<number, HTMLDivElement>();
+  enemyTacticElements = new Map<number, HTMLDivElement>();
   levelChoiceHandler: ((choiceIndex: number) => void) | null = null;
 
   constructor(container: HTMLElement) {
@@ -239,6 +248,10 @@ export class GameUi {
     this.enemyTrackerLayer = document.createElement("div");
     this.enemyTrackerLayer.className = "enemy-tracker-layer";
     this.root.append(this.enemyTrackerLayer);
+
+    this.enemyTacticLayer = document.createElement("div");
+    this.enemyTacticLayer.className = "enemy-tactic-layer";
+    this.root.append(this.enemyTacticLayer);
 
     this.menu = document.createElement("div");
     this.menu.className = "menu";
@@ -456,6 +469,34 @@ export class GameUi {
 
       element.remove();
       this.enemyTrackerElements.delete(enemyId);
+    }
+  }
+
+  updateEnemyTactics(tactics: EnemyTacticSnapshot[]): void {
+    const activeIds = new Set<number>();
+
+    for (const tacticSnapshot of tactics) {
+      activeIds.add(tacticSnapshot.enemyId);
+      let element = this.enemyTacticElements.get(tacticSnapshot.enemyId);
+      if (!element) {
+        element = document.createElement("div");
+        element.className = "enemy-tactic-label";
+        this.enemyTacticElements.set(tacticSnapshot.enemyId, element);
+        this.enemyTacticLayer.append(element);
+      }
+
+      element.style.left = `${tacticSnapshot.screenX}px`;
+      element.style.top = `${tacticSnapshot.screenY}px`;
+      element.textContent = tacticSnapshot.tactic;
+    }
+
+    for (const [enemyId, element] of this.enemyTacticElements) {
+      if (activeIds.has(enemyId)) {
+        continue;
+      }
+
+      element.remove();
+      this.enemyTacticElements.delete(enemyId);
     }
   }
 

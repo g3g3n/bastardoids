@@ -413,6 +413,12 @@ body {
   pointer-events: none;
 }
 
+.enemy-tactic-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 .enemy-tracker {
   position: absolute;
   display: inline-flex;
@@ -452,6 +458,17 @@ body {
   text-transform: uppercase;
   color: #ff8383;
   text-shadow: 0 0 8px rgba(255, 52, 52, 0.34);
+  white-space: nowrap;
+}
+
+.enemy-tactic-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffad5a;
+  text-shadow: 0 0 8px rgba(255, 124, 38, 0.45);
   white-space: nowrap;
 }
 
