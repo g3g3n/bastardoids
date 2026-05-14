@@ -51,6 +51,7 @@ export function createPlayer(playerConfig: PlayerConfig, nextId: number): Create
     heat: 0,
     maxHull: playerConfig.hull,
     hull: playerConfig.hull,
+    armor: playerConfig.armor,
     maxShield: playerConfig.shield,
     shield: playerConfig.shield,
     shieldRegen: playerConfig.shieldRegen,

@@ -3,7 +3,7 @@ import { AudioSystem } from "../audio/AudioSystem";
 import { getAsteroidDefinition } from "../entities/asteroids/asteroidDefinitions";
 import { getWeaponDefinition } from "../entities/projectiles/weaponDefinitions";
 import { getPrimaryFireWeapon } from "../entities/ships/loadout";
-import { getShipBasis } from "../entities/ships/shipController";
+import { getShipBasis, wrapAngle } from "../entities/ships/shipController";
 import { createWeaponProjectileMesh, updateWeaponProjectileMesh } from "../visuals/Weapons";
 import type {
   AsteroidEntity,
@@ -14,8 +14,44 @@ import type {
   ProjectileEntity,
   ReferenceGridBounds,
   ShipEntity,
+  WeaponType,
 } from "../types";
 import type { ResolvedPlayerStats } from "../player/progression/types";
+
+interface DamageMultipliers {
+  shield: number;
+  armor: number;
+  hull: number;
+}
+
+const DEFAULT_DAMAGE_MULTIPLIERS: DamageMultipliers = {
+  shield: 1,
+  armor: 1,
+  hull: 1,
+};
+
+const DAMAGE_MULTIPLIERS_BY_WEAPON_TYPE: Record<WeaponType, DamageMultipliers> = {
+  energy: {
+    shield: 1.25,
+    armor: 0.8,
+    hull: 0.9,
+  },
+  kinetic: {
+    shield: 0.8,
+    armor: 1.2,
+    hull: 1,
+  },
+  explosive: {
+    shield: 0.75,
+    armor: 1.15,
+    hull: 1.25,
+  },
+  thermal: {
+    shield: 1,
+    armor: 1,
+    hull: 1,
+  },
+};
 
 export interface CombatSystemCallbacks {
   allocateId: () => number;
@@ -23,6 +59,7 @@ export interface CombatSystemCallbacks {
   removeObjectFromScene: (object: THREE.Object3D) => void;
   attachCollisionRing: (entity: { id: number; radius: number; position: THREE.Vector3 }) => void;
   removeCollisionRing: (entityId: number) => void;
+  getTrackingTargetIdForShip: (ship: ShipEntity) => number | null;
   grantPlayerRewards: (xpReward: number, scrapReward: number) => void;
   splitLargeAsteroid: (asteroid: AsteroidEntity) => void;
   destroyAsteroid: (asteroid: AsteroidEntity, emitExplosion?: boolean) => void;
@@ -142,6 +179,11 @@ export class CombatSystem {
     const launchSpeed = weaponDefinition.initialSpeed ?? weaponDefinition.speed;
     const baseVelocity = ship.velocity.clone().add(forward.clone().multiplyScalar(launchSpeed));
     const muzzleForward = forward.clone().multiplyScalar(weaponDefinition.muzzleOffsetForward);
+    const trackingTurnRate = weaponDefinition.tracking ?? null;
+    const trackingTargetId =
+      trackingTurnRate !== null
+        ? this.callbacks.getTrackingTargetIdForShip(ship)
+        : null;
 
     if (
       weaponDefinition.name === "plasmaOrb" ||
@@ -156,6 +198,8 @@ export class CombatSystem {
         forward,
         this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
         context.elapsed,
+        trackingTargetId,
+        trackingTurnRate,
       );
       return true;
     }
@@ -171,6 +215,8 @@ export class CombatSystem {
       forward,
       this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
       context.elapsed,
+      trackingTargetId,
+      trackingTurnRate,
     );
     this.createProjectile(
       ship.id,
@@ -181,12 +227,15 @@ export class CombatSystem {
       forward,
       this.getWeaponLifetimeSeconds(ship, weaponDefinition, context.resolvedPlayerStats),
       context.elapsed,
+      trackingTargetId,
+      trackingTurnRate,
     );
     return true;
   }
 
   updateProjectiles(context: CombatUpdateContext): void {
     for (const projectile of [...this.projectiles.values()]) {
+      this.updateProjectileTracking(projectile, context.player, context.enemies, context.delta);
       this.updateProjectilePropulsion(projectile, context.elapsed, context.delta);
       projectile.position.addScaledVector(projectile.velocity, context.delta);
       projectile.mesh.position.copy(projectile.position);
@@ -216,9 +265,11 @@ export class CombatSystem {
       this.playProjectileHitSfx(projectile, target);
       this.applyProjectileImpact(projectile, target);
       this.destroyProjectile(projectile);
+      const weaponDefinition = getWeaponDefinition(projectile.weapon);
       this.applyDamageToEntity(
         target,
         projectile.damage,
+        weaponDefinition.type,
         projectile.faction === "player",
         context.elapsed,
         context.resolvedPlayerStats,
@@ -273,7 +324,7 @@ export class CombatSystem {
       asteroid.size === "small"
         ? this.config.smallAsteroidCollisionDamage
         : this.config.mediumAsteroidCollisionDamage;
-    this.applyDamageToEntity(ship, damage, false, elapsed, resolvedPlayerStats);
+    this.applyDamageToEntity(ship, damage, null, false, elapsed, resolvedPlayerStats);
   }
 
   private createProjectile(
@@ -285,6 +336,8 @@ export class CombatSystem {
     launchDirection: THREE.Vector3,
     lifetimeSeconds: number,
     elapsed: number,
+    trackingTargetId: number | null,
+    trackingTurnRate: number | null,
   ): ProjectileEntity {
     const weaponDefinition = getWeaponDefinition(weaponName);
     const mesh = createWeaponProjectileMesh(weaponDefinition);
@@ -305,6 +358,8 @@ export class CombatSystem {
       position: position.clone(),
       velocity: velocity.clone(),
       facingYaw,
+      trackingTargetId,
+      trackingTurnRate,
       propulsionDirection: weaponDefinition.thrust ? launchDirection.clone() : null,
       propulsionTargetSpeed: weaponDefinition.thrust ? weaponDefinition.speed : null,
       propulsionThrust: weaponDefinition.thrust ?? null,
@@ -421,6 +476,75 @@ export class CombatSystem {
     }
   }
 
+  private updateProjectileTracking(
+    projectile: ProjectileEntity,
+    player: PlayerState | null,
+    enemies: readonly EnemyShipEntity[],
+    delta: number,
+  ): void {
+    if (
+      projectile.trackingTargetId === null ||
+      projectile.trackingTurnRate === null
+    ) {
+      return;
+    }
+
+    const target = this.findProjectileTrackingTarget(
+      projectile.trackingTargetId,
+      player,
+      enemies,
+    );
+    if (!target) {
+      return;
+    }
+
+    const toTarget = target.position.clone().sub(projectile.position).setY(0);
+    if (toTarget.lengthSq() <= 0.0001) {
+      return;
+    }
+
+    const desiredYaw = Math.atan2(toTarget.x, toTarget.z);
+    const yawDelta = wrapAngle(desiredYaw - projectile.facingYaw);
+    const maxYawStep = THREE.MathUtils.degToRad(projectile.trackingTurnRate) * delta;
+    const appliedYawDelta = THREE.MathUtils.clamp(yawDelta, -maxYawStep, maxYawStep);
+    if (Math.abs(appliedYawDelta) <= 0.000001) {
+      return;
+    }
+
+    projectile.facingYaw = wrapAngle(projectile.facingYaw + appliedYawDelta);
+    const planarSpeed = Math.hypot(projectile.velocity.x, projectile.velocity.z);
+    if (planarSpeed <= 0.0001) {
+      return;
+    }
+
+    const nextDirection = new THREE.Vector3(
+      Math.sin(projectile.facingYaw),
+      0,
+      Math.cos(projectile.facingYaw),
+    );
+    projectile.velocity.set(
+      nextDirection.x * planarSpeed,
+      projectile.velocity.y,
+      nextDirection.z * planarSpeed,
+    );
+
+    if (projectile.propulsionDirection !== null) {
+      projectile.propulsionDirection.copy(nextDirection);
+    }
+  }
+
+  private findProjectileTrackingTarget(
+    targetId: number,
+    player: PlayerState | null,
+    enemies: readonly EnemyShipEntity[],
+  ): PlayerState | EnemyShipEntity | null {
+    if (player?.alive && player.id === targetId) {
+      return player;
+    }
+
+    return enemies.find((enemy) => enemy.alive && enemy.id === targetId) ?? null;
+  }
+
   private updateProjectilePropulsion(
     projectile: ProjectileEntity,
     elapsed: number,
@@ -451,6 +575,7 @@ export class CombatSystem {
   private applyDamageToEntity(
     entity: DamageableEntity,
     damage: number,
+    weaponType: WeaponType | null,
     awardsPlayer: boolean,
     elapsed: number,
     resolvedPlayerStats: ResolvedPlayerStats,
@@ -460,17 +585,30 @@ export class CombatSystem {
     }
 
     entity.shieldRegenCooldownUntil = elapsed + entity.shieldRegenDelaySeconds;
+    const damageMultipliers =
+      weaponType === null
+        ? DEFAULT_DAMAGE_MULTIPLIERS
+        : DAMAGE_MULTIPLIERS_BY_WEAPON_TYPE[weaponType];
 
-    let remainingDamage = damage;
+    let remainingBaseDamage = damage;
     const shieldDisabled = entity.type === "player" && resolvedPlayerStats.disableShield;
-    if (!shieldDisabled && entity.shield > 0) {
-      const absorbed = Math.min(entity.shield, remainingDamage);
-      entity.shield -= absorbed;
-      remainingDamage -= absorbed;
+    if (!shieldDisabled && entity.shield > 0 && remainingBaseDamage > 0) {
+      const shieldDamage = remainingBaseDamage * damageMultipliers.shield;
+      const absorbedShield = Math.min(entity.shield, shieldDamage);
+      entity.shield -= absorbedShield;
+      remainingBaseDamage -= absorbedShield / damageMultipliers.shield;
     }
 
-    if (remainingDamage > 0) {
-      entity.hull = Math.max(0, entity.hull - remainingDamage);
+    if ("armor" in entity && entity.armor > 0 && remainingBaseDamage > 0) {
+      const armorDamage = remainingBaseDamage * damageMultipliers.armor;
+      const absorbedArmor = Math.min(entity.armor, armorDamage);
+      entity.armor -= absorbedArmor;
+      remainingBaseDamage -= absorbedArmor / damageMultipliers.armor;
+    }
+
+    if (remainingBaseDamage > 0) {
+      const hullDamage = remainingBaseDamage * damageMultipliers.hull;
+      entity.hull = Math.max(0, entity.hull - hullDamage);
     }
 
     if (entity.hull > 0) {

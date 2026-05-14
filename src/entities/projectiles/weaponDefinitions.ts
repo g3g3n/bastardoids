@@ -3,6 +3,7 @@ import type { WeaponDefinition, WeaponName } from "../../types";
 export const WEAPON_DEFINITIONS = {
   laser: {
     name: "laser",
+    type: "energy",
     visual: "laserBolt",
     muzzleOffsetForward: 2.64,
     muzzleOffsetSide: 1.8,
@@ -14,7 +15,7 @@ export const WEAPON_DEFINITIONS = {
     hitVolumeAgainstShip: 0.8,
     hitSoundOffsetSeconds: 0.41,
     hitSoundPlaybackRate: 1.25,
-    heat: 33,
+    heat: 27,
     shotsPerSecond: 2,
     speed: 82,
     lifetimeSeconds: 1.2,
@@ -27,6 +28,7 @@ export const WEAPON_DEFINITIONS = {
   },
   kineticTorpedo: {
     name: "kineticTorpedo",
+    type: "kinetic",
     visual: "kineticTorpedo",
     muzzleOffsetForward: 2.64,
     muzzleOffsetSide: 2.6,
@@ -34,8 +36,8 @@ export const WEAPON_DEFINITIONS = {
     hitVolumeAgainstAsteroid: 0.75,
     hitVolumeAgainstShip: 0.85,
     hitSoundOffsetSeconds: 0.05,
-    heat: 50,
-    shotsPerSecond: 1.15,
+    heat: 10,
+    shotsPerSecond: 0.5,
     speed: 85,
     initialSpeed: 10,
     initialSpeedDuration: 0.4,
@@ -50,6 +52,7 @@ export const WEAPON_DEFINITIONS = {
   },
   plasmaOrb: {
     name: "plasmaOrb",
+    type: "thermal",
     visual: "plasmaOrb",
     muzzleOffsetForward: 2.64,
     muzzleOffsetSide: 0,
@@ -69,6 +72,7 @@ export const WEAPON_DEFINITIONS = {
   },
   lightPlasmaCannon: {
     name: "lightPlasmaCannon",
+    type: "thermal",
     visual: "lightPlasmaCannon",
     muzzleOffsetForward: 2.64,
     muzzleOffsetSide: 0,
@@ -91,6 +95,25 @@ export const WEAPON_DEFINITIONS = {
     projectileMass: 5.0,
     visualLength: 1.8,
     visualWidth: 2.43,
+  },
+  srmLocust: {
+    name: "srmLocust",
+    type: "explosive",
+    visual: "srmLocust",
+    tracking: 20,
+    hitSound: "explosion2",
+    muzzleOffsetForward: 2.64,
+    muzzleOffsetSide: 3.3,
+    shotsPerSecond: 0.5,
+    speed: 57,
+    lifetimeSeconds: 4.0,
+    damage: 26,
+    radius: 2.15,
+    mass: 2.5,
+    projectileMass: 2.0,
+    heat: 10,
+    visualLength: 2.7,
+    visualWidth: 0.62,
   },
 } satisfies Record<WeaponName, WeaponDefinition>;
 

@@ -19,8 +19,6 @@ export interface CreatedEnemyShip {
 function createEmptyPerception(): EnemyPerceptionSnapshot {
   return {
     distanceToPlayer: Infinity,
-    relativeBearing: 0,
-    playerVelocity: new THREE.Vector3(),
     closestApproachPlayerDistance: Infinity,
     playerCollisionRadius: 0,
     nearestAsteroidThreatDistance: Infinity,
@@ -88,7 +86,6 @@ export function createEnemyShip(
   const preferredRange =
     definition.preferredRangeMin +
     (definition.preferredRangeMax - definition.preferredRangeMin) * 0.5;
-  const slotAngle = (nextId * 2.399963229728653) % (Math.PI * 2);
 
   const enemy: EnemyShipEntity = {
     id: nextId,
@@ -102,6 +99,7 @@ export function createEnemyShip(
     heat: 0,
     maxHull: definition.maxHull,
     hull: definition.maxHull,
+    armor: definition.armor,
     maxShield: definition.shield,
     shield: definition.shield,
     shieldRegen: definition.shieldRegen,
@@ -117,7 +115,11 @@ export function createEnemyShip(
     blackboard: {
       preferredRange,
       orbitDirection: nextId % 2 === 0 ? 1 : -1,
-      slotAngle,
+      targetShipId: null,
+      commitAttackActive: false,
+      commitAttackUntil: 0,
+      flyByActive: false,
+      flyByDestination: null,
       currentTactic: "closeToRange",
       engaged: false,
       disengageAt: 0,

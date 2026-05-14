@@ -7,6 +7,7 @@ import type {
   EnemyPerceptionSnapshot,
   EnemyShipEntity,
   EnemyTactic,
+  OrbitPresetName,
   PlayerState,
   ProjectileEntity,
   ShipControlIntent,
@@ -30,16 +31,53 @@ const IDLE_INTENT: ShipControlIntent = {
   firePrimary: false,
 };
 
-const INTERCEPT_TIME_SAMPLES = 48;
-const INTERCEPT_REFINE_STEPS = 10;
+const INTERCEPT_TIME_SAMPLES = 248;
+const INTERCEPT_REFINE_STEPS = 50;
 const PLAYER_CLOSEST_APPROACH_BUFFER = 2;
 const ASTEROID_CLOSEST_APPROACH_BUFFER = 2;
+const COMMIT_ATTACK_DURATION_SECONDS = 2.5;
+const COMMIT_ATTACK_MAX_RELATIVE_LATERAL_SPEED = 15;
+const COMMIT_ATTACK_MAX_ACTIVATION_YAW_ERROR_DEGREES = 55;
+const OVERHEATED_VENT_MULTIPLIER = 0.65;
+const FLY_BY_ACTIVATION_SPEED_FRACTION = 0.2;
+const FLY_BY_ACTIVATION_RANGE_MIN_MULTIPLIER = 0.80;
+const FLY_BY_ACTIVATION_RANGE_MAX_MULTIPLIER = 1.25;
+const FLY_BY_MAX_RELATIVE_LATERAL_SPEED = 12;
+const FLY_BY_DESTINATION_BEHIND_DISTANCE = 120;
+const FLY_BY_DESTINATION_SIDE_OFFSET = 15;
+const FLY_BY_COMPLETION_DISTANCE = 30;
+const ORBIT_DIRECTION_SWITCH_TANGENTIAL_SPEED = 1;
+const ORBIT_PRESET_TUNING: Record<
+  OrbitPresetName,
+  {
+    tangentWeight: number;
+    inwardCorrectionWeight: number;
+    outwardCorrectionWeight: number;
+  }
+> = {
+  aggressive: {
+    tangentWeight: 1.35,
+    inwardCorrectionWeight: 0.75,
+    outwardCorrectionWeight: 0.45,
+  },
+  balanced: {
+    tangentWeight: 1.15,
+    inwardCorrectionWeight: 0.55,
+    outwardCorrectionWeight: 0.55,
+  },
+  wide: {
+    tangentWeight: 0.9,
+    inwardCorrectionWeight: 0.35,
+    outwardCorrectionWeight: 0.7,
+  },
+};
 
 export function updateEnemyAi(
   enemy: EnemyShipEntity,
   context: EnemyAiContext,
 ): ShipControlIntent {
   if (!context.player || !enemy.alive) {
+    enemy.blackboard.targetShipId = null;
     return IDLE_INTENT;
   }
 
@@ -56,6 +94,7 @@ export function updateEnemyAi(
   const shouldPursuePlayer =
     playerInDetectionRange ||
     (enemy.blackboard.engaged && context.elapsed < enemy.blackboard.disengageAt);
+  enemy.blackboard.targetShipId = shouldPursuePlayer ? context.player.id : null;
   const decisionInterval =
     shouldPursuePlayer
       ? definition.decisionInterval
@@ -66,7 +105,34 @@ export function updateEnemyAi(
     enemy.blackboard.nextPerceptionUpdateAt = context.elapsed + decisionInterval;
   }
 
-  if (!shouldPursuePlayer) {
+  updateOrbitDirectionFromPlayerMotion(enemy, context.player);
+
+  if (
+    enemy.blackboard.commitAttackActive &&
+    isCommitAttackComplete(enemy, context.elapsed)
+  ) {
+    clearCommitAttackState(enemy);
+    enemy.blackboard.decisionLockUntil = 0;
+    enemy.blackboard.nextDecisionAt = 0;
+  }
+
+  if (
+    enemy.blackboard.flyByActive &&
+    isFlyByComplete(enemy)
+  ) {
+    clearFlyByState(enemy);
+    enemy.blackboard.decisionLockUntil = 0;
+    enemy.blackboard.nextDecisionAt = 0;
+  }
+
+  if (enemy.blackboard.commitAttackActive) {
+    enemy.blackboard.currentTactic = "commitAttack";
+    enemy.blackboard.nextDecisionAt = context.elapsed + decisionInterval;
+  } else if (enemy.blackboard.flyByActive) {
+    enemy.blackboard.currentTactic =
+      chooseFlyByOverrideTactic(enemy.blackboard.perception) ?? "flyBy";
+    enemy.blackboard.nextDecisionAt = context.elapsed + decisionInterval;
+  } else if (!shouldPursuePlayer) {
     const emergencyTactic = chooseEmergencyTactic(enemy, enemy.blackboard.perception);
     enemy.blackboard.currentTactic = emergencyTactic ?? "returnToSpawn";
     enemy.blackboard.nextDecisionAt = context.elapsed + decisionInterval;
@@ -77,25 +143,31 @@ export function updateEnemyAi(
       enemy.blackboard.decisionLockUntil = context.elapsed + definition.tacticLockSeconds * 0.75;
       enemy.blackboard.nextDecisionAt = context.elapsed + decisionInterval;
     } else if (context.elapsed >= enemy.blackboard.nextDecisionAt) {
-      const nextTactic = chooseEnemyTactic(enemy, context.player, enemy.blackboard.perception);
+      const nextTactic = chooseEnemyTactic(
+        enemy,
+        context.player,
+        enemy.blackboard.perception,
+        context.elapsed,
+      );
       if (
         context.elapsed >= enemy.blackboard.decisionLockUntil ||
         nextTactic === enemy.blackboard.currentTactic
       ) {
+        if (nextTactic === "commitAttack") {
+          activateCommitAttack(enemy, context.elapsed);
+          clearFlyByState(enemy);
+        } else if (nextTactic === "flyBy") {
+          activateFlyBy(enemy, context.player);
+          clearCommitAttackState(enemy);
+        } else {
+          clearCommitAttackState(enemy);
+          clearFlyByState(enemy);
+        }
         enemy.blackboard.currentTactic = nextTactic;
         enemy.blackboard.decisionLockUntil = context.elapsed + definition.tacticLockSeconds;
       }
       enemy.blackboard.nextDecisionAt = context.elapsed + decisionInterval;
     }
-  }
-
-  if (
-    enemy.blackboard.currentTactic === "orbitLeft" ||
-    enemy.blackboard.currentTactic === "orbitRight"
-  ) {
-    enemy.blackboard.slotAngle = wrapAngle(
-      enemy.blackboard.slotAngle + enemy.blackboard.orbitDirection * context.delta * 0.55,
-    );
   }
 
   return buildEnemyControlIntent(enemy, context);
@@ -109,8 +181,6 @@ function computeEnemyPerception(
   if (!player) {
     return {
       distanceToPlayer: Infinity,
-      relativeBearing: 0,
-      playerVelocity: new THREE.Vector3(),
       closestApproachPlayerDistance: Infinity,
       playerCollisionRadius: 0,
       nearestAsteroidThreatDistance: Infinity,
@@ -127,7 +197,6 @@ function computeEnemyPerception(
 
   const toPlayer = planarVector(enemy.position, player.position);
   const distanceToPlayer = toPlayer.length();
-  const relativeBearing = wrapAngle(Math.atan2(toPlayer.x, toPlayer.z) - enemy.yaw);
 
   let nearestAsteroidThreatDistance = Infinity;
   let nearestAsteroidThreatCollisionRadius = 0;
@@ -197,8 +266,6 @@ function computeEnemyPerception(
 
   return {
     distanceToPlayer,
-    relativeBearing,
-    playerVelocity: player.velocity.clone(),
     closestApproachPlayerDistance: playerApproach.distance,
     playerCollisionRadius: enemy.radius + player.radius,
     nearestAsteroidThreatDistance,
@@ -237,10 +304,17 @@ function chooseEmergencyTactic(
   return playerCollisionThreat ? "evadePlayerCollision" : null;
 }
 
+function chooseFlyByOverrideTactic(
+  perception: EnemyPerceptionSnapshot,
+): EnemyTactic | null {
+  return hasAsteroidClosestApproachCollisionRisk(perception) ? "evadeObjectCollision" : null;
+}
+
 function chooseEnemyTactic(
   enemy: EnemyShipEntity,
   player: PlayerState,
   perception: EnemyPerceptionSnapshot,
+  elapsed: number,
 ): EnemyTactic {
   const definition = enemy.definition;
   const minRange = definition.preferredRangeMin;
@@ -270,18 +344,27 @@ function chooseEnemyTactic(
   const playerForward = getShipBasis(player.yaw).forward;
   const playerToEnemy = planarVector(player.position, enemy.position).normalize();
   const behindAlignment = clamp01((1 - playerForward.dot(playerToEnemy)) * 0.5);
+  const relativeLateralSpeed = getRelativeLateralSpeedToPlayer(enemy, player);
+  const availableHeatFraction = getAvailableHeatFraction(enemy);
+  const commitAttackHeatScore = availableHeatFraction * 100 * 0.04;
+  const commitAttackLateralScore =
+    clamp01(1 - relativeLateralSpeed / COMMIT_ATTACK_MAX_RELATIVE_LATERAL_SPEED) * 3.5;
 
   const scores: Record<EnemyTactic, number> = {
     closeToRange: tooFar * 3.2,
     holdRange: withinBand * (1 - collisionThreat) * (1 - projectileThreat) * 1.05,
     orbitLeft:
-      withinBand *
+      withinBand * 0 *
       definition.orbitWeight *
       (enemy.blackboard.orbitDirection > 0 ? 1.1 : 0.85),
     orbitRight:
-      withinBand *
+      withinBand * 0 *
       definition.orbitWeight *
       (enemy.blackboard.orbitDirection < 0 ? 1.1 : 0.85),
+    commitAttack: canActivateCommitAttack(enemy, player, perception, elapsed)
+      ? commitAttackHeatScore + commitAttackLateralScore
+      : 0,
+    flyBy: canActivateFlyByTactic(enemy, player, perception) ? (1 - collisionThreat * 0.5) * 1.6 : 0,
     breakAway: tooClose * 3.4 + collisionThreat * 1.2,
     evadePlayerCollision: 0,
     evadeObjectCollision: collisionThreat * definition.avoidanceWeight * 2.8,
@@ -319,7 +402,14 @@ function buildEnemyControlIntent(
     enemy.blackboard.perception,
     objectThreatPosition,
   );
-  desiredMovement.add(getAvoidanceVector(enemy, player, enemy.blackboard.perception));
+  desiredMovement.add(
+    getAvoidanceVector(
+      enemy,
+      player,
+      enemy.blackboard.perception,
+      enemy.blackboard.currentTactic,
+    ),
+  );
 
   if (enemy.blackboard.currentTactic === "returnToSpawn") {
     const homeVector = planarVector(enemy.position, enemy.blackboard.spawnPoint);
@@ -370,44 +460,44 @@ function buildEnemyControlIntent(
   const weaponName = getPrimaryFireWeapon(enemy.definition);
   const weapon = weaponName ? getWeaponDefinition(weaponName) : null;
   const aimPoint =
-    weapon !== null && enemy.blackboard.perception.distanceToPlayer <= enemy.definition.fireRadius
+    weapon !== null
       ? (() => {
-          const solvedInterceptPoint = solveInterceptPoint(
+          const solvedAimPoint = solveAimPoint(
             enemy.position,
             enemy.velocity,
             player.position,
             player.velocity,
             weapon,
           );
-          const fullLeadPoint = solvedInterceptPoint ?? player.position;
-
-          if (solvedInterceptPoint) {
-            enemy.blackboard.debugInterceptDirection
-              .copy(solvedInterceptPoint)
-              .sub(enemy.position)
-              .setY(0);
-            enemy.blackboard.debugHasInterceptPoint =
-              enemy.blackboard.debugInterceptDirection.lengthSq() > 0.0001;
-            if (enemy.blackboard.debugHasInterceptPoint) {
-              enemy.blackboard.debugInterceptDirection.normalize();
-            }
-          } else {
-            enemy.blackboard.debugHasInterceptPoint = false;
-          }
-
-          let leadFactor = 1.4;
+          const fullLeadPoint = solvedAimPoint ?? player.position;
+          let leadFactor = 1.0
           if (weapon.name !== "kineticTorpedo") {
             if (
               enemy.blackboard.currentTactic === "orbitLeft" ||
               enemy.blackboard.currentTactic === "orbitRight"
             ) {
-              leadFactor = 0.85;
+              leadFactor = 0.35;
             } else if (enemy.blackboard.currentTactic === "holdRange") {
-              leadFactor = 0.80;
+              leadFactor = 1.0;
             }
           }
 
-          return new THREE.Vector3().lerpVectors(player.position, fullLeadPoint, leadFactor);
+          const aimPoint = new THREE.Vector3().lerpVectors(
+            player.position,
+            fullLeadPoint,
+            leadFactor,
+          );
+          enemy.blackboard.debugInterceptDirection
+            .copy(aimPoint)
+            .sub(enemy.position)
+            .setY(0);
+          enemy.blackboard.debugHasInterceptPoint =
+            enemy.blackboard.debugInterceptDirection.lengthSq() > 0.0001;
+          if (enemy.blackboard.debugHasInterceptPoint) {
+            enemy.blackboard.debugInterceptDirection.normalize();
+          }
+
+          return aimPoint;
         })()
       : (() => {
           enemy.blackboard.debugHasInterceptPoint = false;
@@ -422,20 +512,47 @@ function buildEnemyControlIntent(
     yawError <= THREE.MathUtils.degToRad(enemy.definition.aimToleranceDegrees) &&
     !hasLineBlock(enemy, enemy.position, player.position, context.asteroids, context.enemies);
 
+  if (enemy.blackboard.currentTactic === "commitAttack") {
+    return {
+      targetYaw,
+      forwardThrottle: 0,
+      reverseThrottle: 0,
+      strafe: 0,
+      useAfterburner: false,
+      firePrimary: canFire && weapon !== null && weapon.shotsPerSecond > 0,
+    };
+  }
+
   const objectThreatBehind =
     objectThreatPosition !== null && isThreatBehindEnemy(enemy, objectThreatPosition);
-  const allowReverse =
-    enemy.blackboard.currentTactic === "breakAway" ||
-    enemy.blackboard.currentTactic === "evadePlayerCollision" ||
-    (enemy.blackboard.currentTactic === "evadeObjectCollision" && !objectThreatBehind);
-  let forwardThrottle = Math.max(0, desiredDirection.dot(forward));
-  let reverseThrottle = allowReverse ? Math.max(0, -desiredDirection.dot(forward)) : 0;
-  let strafe = THREE.MathUtils.clamp(desiredDirection.dot(right), -1, 1);
+  let forwardThrottle = 0;
+  let reverseThrottle = 0;
+  let strafe = 0;
 
-  if (!allowReverse && reverseThrottle === 0 && desiredDirection.dot(forward) < -0.2) {
-    const sidestepSign = Math.sign(wrapAngle(targetYaw - enemy.yaw)) || enemy.blackboard.orbitDirection;
-    strafe = THREE.MathUtils.clamp(strafe + sidestepSign * Math.abs(desiredDirection.dot(forward)), -1, 1);
-    forwardThrottle *= 0.35;
+  if (enemy.blackboard.currentTactic === "flyBy") {
+    const flyByMovement = getFlyByMovementInput(desiredDirection, forward, right);
+    forwardThrottle = flyByMovement.forwardThrottle;
+    reverseThrottle = flyByMovement.reverseThrottle;
+    strafe = flyByMovement.strafe;
+  } else {
+    const allowReverse =
+      enemy.blackboard.currentTactic === "closeToRange" ||
+      enemy.blackboard.currentTactic === "repositionBehind" ||
+      enemy.blackboard.currentTactic === "breakAway" ||
+      enemy.blackboard.currentTactic === "holdRange" ||
+      enemy.blackboard.currentTactic === "orbitLeft" ||
+      enemy.blackboard.currentTactic === "orbitRight" ||
+      enemy.blackboard.currentTactic === "evadePlayerCollision" ||
+      (enemy.blackboard.currentTactic === "evadeObjectCollision" && !objectThreatBehind);
+    forwardThrottle = Math.max(0, desiredDirection.dot(forward));
+    reverseThrottle = allowReverse ? Math.max(0, -desiredDirection.dot(forward)) : 0;
+    strafe = THREE.MathUtils.clamp(desiredDirection.dot(right), -1, 1);
+
+    if (!allowReverse && reverseThrottle === 0 && desiredDirection.dot(forward) < -0.2) {
+      const sidestepSign = Math.sign(wrapAngle(targetYaw - enemy.yaw)) || enemy.blackboard.orbitDirection;
+      strafe = THREE.MathUtils.clamp(strafe + sidestepSign * Math.abs(desiredDirection.dot(forward)), -1, 1);
+      forwardThrottle *= 0.35;
+    }
   }
 
   return {
@@ -462,26 +579,38 @@ function getBaseTacticMovement(
   const leftTangent = new THREE.Vector3(-radialToPlayer.z, 0, radialToPlayer.x);
   const rightTangent = new THREE.Vector3(radialToPlayer.z, 0, -radialToPlayer.x);
   const tangent = enemy.blackboard.orbitDirection > 0 ? leftTangent : rightTangent;
+  const orbitTuning = ORBIT_PRESET_TUNING[enemy.definition.orbitPreset];
   const preferredRange = enemy.blackboard.preferredRange;
   const radialError = distance - preferredRange;
   const radialCorrection = THREE.MathUtils.clamp(radialError / Math.max(preferredRange, 1), -1, 1);
   const desired = new THREE.Vector3();
 
   if (tactic === "closeToRange") {
-    desired.copy(radialToPlayer).multiplyScalar(1.25).addScaledVector(tangent, 0.01);
+    desired.copy(radialToPlayer).multiplyScalar(10.0).addScaledVector(tangent, 0.0);
   } else if (tactic === "holdRange") {
     desired
       .copy(tangent)
-      .multiplyScalar(0.85)
-      .addScaledVector(radialToPlayer, Math.max(radialCorrection, 0) * 0.65)
-      .addScaledVector(awayFromPlayer, Math.max(-radialCorrection, 0) * 0.65);
+      .multiplyScalar(11.85)
+      .addScaledVector(radialToPlayer, Math.max(radialCorrection, 0) *  0.15)
+      .addScaledVector(awayFromPlayer, Math.max(-radialCorrection, 0) * 0.15);
   } else if (tactic === "orbitLeft" || tactic === "orbitRight") {
     const orbitTangent = tactic === "orbitLeft" ? leftTangent : rightTangent;
     desired
       .copy(orbitTangent)
-      .multiplyScalar(1.15)
-      .addScaledVector(radialToPlayer, Math.max(radialCorrection, 0) * 0.55)
-      .addScaledVector(awayFromPlayer, Math.max(-radialCorrection, 0) * 0.55);
+      .multiplyScalar(orbitTuning.tangentWeight)
+      .addScaledVector(
+        radialToPlayer,
+        Math.max(radialCorrection, 0) * orbitTuning.inwardCorrectionWeight,
+      )
+      .addScaledVector(
+        awayFromPlayer,
+        Math.max(-radialCorrection, 0) * orbitTuning.outwardCorrectionWeight,
+      );
+  } else if (tactic === "flyBy") {
+    const destination = enemy.blackboard.flyByDestination;
+    if (destination !== null) {
+      desired.copy(planarVector(enemy.position, destination));
+    }
   } else if (tactic === "breakAway") {
     desired.copy(awayFromPlayer).multiplyScalar(1.2).addScaledVector(tangent, 0.35);
   } else if (tactic === "evadePlayerCollision") {
@@ -552,7 +681,12 @@ function getAvoidanceVector(
   enemy: EnemyShipEntity,
   player: PlayerState,
   perception: EnemyPerceptionSnapshot,
+  tactic: EnemyTactic,
 ): THREE.Vector3 {
+  if (tactic === "flyBy") {
+    return new THREE.Vector3();
+  }
+
   const desired = new THREE.Vector3();
   const definition = enemy.definition;
 
@@ -604,6 +738,252 @@ function hasAsteroidClosestApproachCollisionRisk(
     perception.nearestAsteroidThreatDistance <
       perception.nearestAsteroidThreatCollisionRadius + ASTEROID_CLOSEST_APPROACH_BUFFER
   );
+}
+
+function canActivateFlyByTactic(
+  enemy: EnemyShipEntity,
+  player: PlayerState,
+  perception: EnemyPerceptionSnapshot,
+): boolean {
+  if (!isFlyByTacticAvailable(enemy)) {
+    return false;
+  }
+
+  const distanceMin =
+    enemy.definition.preferredRangeMax * FLY_BY_ACTIVATION_RANGE_MIN_MULTIPLIER;
+  const distanceMax =
+    enemy.definition.preferredRangeMax * FLY_BY_ACTIVATION_RANGE_MAX_MULTIPLIER;
+  if (
+    perception.distanceToPlayer < distanceMin ||
+    perception.distanceToPlayer > distanceMax
+  ) {
+    return false;
+  }
+
+  const forwardSpeed = Math.max(0, enemy.velocity.dot(getShipBasis(enemy.yaw).forward));
+  if (forwardSpeed > enemy.definition.maxSpeed * FLY_BY_ACTIVATION_SPEED_FRACTION) {
+    return false;
+  }
+
+  return getRelativeLateralSpeedToPlayer(enemy, player) <= FLY_BY_MAX_RELATIVE_LATERAL_SPEED;
+}
+
+function canActivateCommitAttack(
+  enemy: EnemyShipEntity,
+  player: PlayerState,
+  perception: EnemyPerceptionSnapshot,
+  elapsed: number,
+): boolean {
+  const weapon = getEnemyPrimaryWeaponDefinition(enemy);
+  if (weapon === null || weapon.shotsPerSecond <= 0) {
+    return false;
+  }
+
+  if (perception.distanceToPlayer > enemy.definition.preferredRangeMax) {
+    return false;
+  }
+
+  if (getRelativeLateralSpeedToPlayer(enemy, player) > COMMIT_ATTACK_MAX_RELATIVE_LATERAL_SPEED) {
+    return false;
+  }
+
+  const aimPoint = solveAimPoint(
+    enemy.position,
+    enemy.velocity,
+    player.position,
+    player.velocity,
+    weapon,
+  ) ?? player.position;
+  const targetYaw = Math.atan2(aimPoint.x - enemy.position.x, aimPoint.z - enemy.position.z);
+  const yawError = Math.abs(wrapAngle(targetYaw - enemy.yaw));
+  if (yawError > THREE.MathUtils.degToRad(COMMIT_ATTACK_MAX_ACTIVATION_YAW_ERROR_DEGREES)) {
+    return false;
+  }
+
+  return hasHeatToSustainCommitAttack(enemy, weapon, elapsed);
+}
+
+function updateOrbitDirectionFromPlayerMotion(
+  enemy: EnemyShipEntity,
+  player: PlayerState | null,
+): void {
+  if (!player) {
+    return;
+  }
+
+  const tangentialSpeed = getRelativeTangentialSpeedAroundEnemy(enemy, player);
+  if (tangentialSpeed > ORBIT_DIRECTION_SWITCH_TANGENTIAL_SPEED) {
+    enemy.blackboard.orbitDirection = -1;
+  } else if (tangentialSpeed < -ORBIT_DIRECTION_SWITCH_TANGENTIAL_SPEED) {
+    enemy.blackboard.orbitDirection = 1;
+  }
+}
+
+function isFlyByTacticAvailable(enemy: EnemyShipEntity): boolean {
+  return enemy.definition.weapon1 !== null;
+}
+
+function activateFlyBy(enemy: EnemyShipEntity, player: PlayerState): void {
+  enemy.blackboard.flyByActive = true;
+  enemy.blackboard.flyByDestination = createFlyByDestination(enemy, player);
+}
+
+function activateCommitAttack(enemy: EnemyShipEntity, elapsed: number): void {
+  enemy.blackboard.commitAttackActive = true;
+  enemy.blackboard.commitAttackUntil = elapsed + COMMIT_ATTACK_DURATION_SECONDS;
+}
+
+function clearCommitAttackState(enemy: EnemyShipEntity): void {
+  enemy.blackboard.commitAttackActive = false;
+  enemy.blackboard.commitAttackUntil = 0;
+}
+
+function clearFlyByState(enemy: EnemyShipEntity): void {
+  enemy.blackboard.flyByActive = false;
+  enemy.blackboard.flyByDestination = null;
+}
+
+function createFlyByDestination(
+  enemy: EnemyShipEntity,
+  player: PlayerState,
+): THREE.Vector3 {
+  const { forward, right } = getShipBasis(player.yaw);
+  const sideDirection = enemy.blackboard.orbitDirection > 0 ? -1 : 1;
+  return player.position
+    .clone()
+    .addScaledVector(forward, -FLY_BY_DESTINATION_BEHIND_DISTANCE)
+    .addScaledVector(right, FLY_BY_DESTINATION_SIDE_OFFSET * sideDirection);
+}
+
+function isFlyByComplete(enemy: EnemyShipEntity): boolean {
+  const destination = enemy.blackboard.flyByDestination;
+  if (destination === null) {
+    return true;
+  }
+
+  return planarDistance(enemy.position, destination) <= FLY_BY_COMPLETION_DISTANCE;
+}
+
+function isCommitAttackComplete(
+  enemy: EnemyShipEntity,
+  elapsed: number,
+): boolean {
+  if (elapsed >= enemy.blackboard.commitAttackUntil) {
+    return true;
+  }
+
+  const weapon = getEnemyPrimaryWeaponDefinition(enemy);
+  if (weapon === null || weapon.shotsPerSecond <= 0) {
+    return true;
+  }
+
+  return !hasHeatToSustainCommitAttack(enemy, weapon, elapsed);
+}
+
+function getRelativeLateralSpeedToPlayer(
+  enemy: EnemyShipEntity,
+  player: PlayerState,
+): number {
+  return Math.abs(getRelativeTangentialSpeedAroundEnemy(enemy, player));
+}
+
+function getRelativeTangentialSpeedAroundEnemy(
+  enemy: EnemyShipEntity,
+  player: PlayerState,
+): number {
+  const toPlayer = planarVector(enemy.position, player.position);
+  if (toPlayer.lengthSq() <= 0.0001) {
+    return 0;
+  }
+
+  const radialToPlayer = toPlayer.normalize();
+  const lateralAxis = new THREE.Vector3(-radialToPlayer.z, 0, radialToPlayer.x);
+  const relativeVelocity = player.velocity.clone().setY(0).sub(enemy.velocity.clone().setY(0));
+  return relativeVelocity.dot(lateralAxis);
+}
+
+function getEnemyPrimaryWeaponDefinition(
+  enemy: EnemyShipEntity,
+): ReturnType<typeof getWeaponDefinition> | null {
+  const weaponName = getPrimaryFireWeapon(enemy.definition);
+  return weaponName ? getWeaponDefinition(weaponName) : null;
+}
+
+function hasHeatToSustainCommitAttack(
+  enemy: EnemyShipEntity,
+  weapon: ReturnType<typeof getWeaponDefinition>,
+  elapsed: number,
+): boolean {
+  const timeUntilNextShot = Math.max(0, enemy.blackboard.nextFireAt - elapsed);
+  const predictedHeat = predictHeatAfterVenting(enemy, timeUntilNextShot);
+  return predictedHeat + weapon.heat <= enemy.thermalCap;
+}
+
+function predictHeatAfterVenting(
+  enemy: EnemyShipEntity,
+  durationSeconds: number,
+): number {
+  let remainingDuration = Math.max(durationSeconds, 0);
+  let heat = enemy.heat;
+  const softCap = Math.floor((enemy.thermalCap * 2) / 3);
+
+  if (remainingDuration <= 0 || heat <= 0) {
+    return heat;
+  }
+
+  if (heat >= softCap) {
+    const overheatedVentRate = enemy.vent * OVERHEATED_VENT_MULTIPLIER;
+    if (overheatedVentRate > 0) {
+      const timeToReachSoftCap = Math.max(0, heat - softCap) / overheatedVentRate;
+      const overheatedDuration = Math.min(remainingDuration, timeToReachSoftCap);
+      heat = Math.max(softCap, heat - overheatedVentRate * overheatedDuration);
+      remainingDuration -= overheatedDuration;
+    }
+  }
+
+  if (remainingDuration > 0 && heat > 0 && enemy.vent > 0) {
+    heat = Math.max(0, heat - enemy.vent * remainingDuration);
+  }
+
+  return heat;
+}
+
+function getAvailableHeatFraction(enemy: EnemyShipEntity): number {
+  if (enemy.thermalCap <= 0) {
+    return 0;
+  }
+
+  return clamp01((enemy.thermalCap - enemy.heat) / enemy.thermalCap);
+}
+
+function getFlyByMovementInput(
+  desiredDirection: THREE.Vector3,
+  forward: THREE.Vector3,
+  right: THREE.Vector3,
+): Pick<ShipControlIntent, "forwardThrottle" | "reverseThrottle" | "strafe"> {
+  if (desiredDirection.lengthSq() <= 0.0001) {
+    return {
+      forwardThrottle: 0,
+      reverseThrottle: 0,
+      strafe: 0,
+    };
+  }
+
+  const forwardComponent = desiredDirection.dot(forward);
+  const strafeComponent = desiredDirection.dot(right);
+  const dominantComponent = Math.max(
+    Math.abs(forwardComponent),
+    Math.abs(strafeComponent),
+    0.001,
+  );
+  const scaledForward = THREE.MathUtils.clamp(forwardComponent / dominantComponent, -1, 1);
+  const scaledStrafe = THREE.MathUtils.clamp(strafeComponent / dominantComponent, -1, 1);
+
+  return {
+    forwardThrottle: Math.max(0, scaledForward),
+    reverseThrottle: Math.max(0, -scaledForward),
+    strafe: scaledStrafe,
+  };
 }
 
 function getRepulsionVector(
@@ -724,6 +1104,51 @@ function solveInterceptPoint(
   return previousDifference >= 0
     ? targetPosition.clone().addScaledVector(planarTargetVelocity, previousTime)
     : null;
+}
+
+function solveAimPoint(
+  shooterPosition: THREE.Vector3,
+  shooterVelocity: THREE.Vector3,
+  targetPosition: THREE.Vector3,
+  targetVelocity: THREE.Vector3,
+  weapon: ReturnType<typeof getWeaponDefinition>,
+): THREE.Vector3 | null {
+  const exactInterceptPoint = solveInterceptPoint(
+    shooterPosition,
+    shooterVelocity,
+    targetPosition,
+    targetVelocity,
+    weapon,
+  );
+  if (exactInterceptPoint !== null) {
+    return exactInterceptPoint;
+  }
+
+  const relativePosition = planarVector(shooterPosition, targetPosition);
+  const planarShooterVelocity = shooterVelocity.clone().setY(0);
+  const planarTargetVelocity = targetVelocity.clone().setY(0);
+  const relativeTargetVelocity = planarTargetVelocity.clone().sub(planarShooterVelocity);
+  if (relativePosition.lengthSq() <= 0.0001) {
+    return targetPosition.clone();
+  }
+
+  let bestTime = 0;
+  let bestDifference = Infinity;
+
+  for (let sampleIndex = 0; sampleIndex <= INTERCEPT_TIME_SAMPLES; sampleIndex += 1) {
+    const sampleTime = (weapon.lifetimeSeconds * sampleIndex) / INTERCEPT_TIME_SAMPLES;
+    const sampleDifference = Math.abs(
+      getProjectileTravelDistanceAtTime(weapon, sampleTime) -
+      getRelativeTargetDistanceAtTime(relativePosition, relativeTargetVelocity, sampleTime),
+    );
+
+    if (sampleDifference < bestDifference) {
+      bestDifference = sampleDifference;
+      bestTime = sampleTime;
+    }
+  }
+
+  return targetPosition.clone().addScaledVector(planarTargetVelocity, bestTime);
 }
 
 function getRelativeTargetDistanceAtTime(

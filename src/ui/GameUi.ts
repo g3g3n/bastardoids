@@ -58,6 +58,14 @@ export interface EnemyTacticSnapshot {
   tactic: string;
 }
 
+export interface EnemyLockSnapshot {
+  enemyId: number;
+  screenX: number;
+  screenY: number;
+  widthPx: number;
+  heightPx: number;
+}
+
 export interface LevelUpChoiceSnapshot {
   name: string;
   kind: "passive" | "active";
@@ -89,6 +97,7 @@ export class GameUi {
   shipHullLabel: HTMLSpanElement;
   crosshair: HTMLDivElement;
   enemyTrackerLayer: HTMLDivElement;
+  enemyLockLayer: HTMLDivElement;
   enemyTacticLayer: HTMLDivElement;
   afterburnerGauge: HTMLDivElement;
   afterburnerFill: HTMLDivElement;
@@ -103,6 +112,7 @@ export class GameUi {
   levelUpTitle: HTMLHeadingElement;
   levelUpChoices: HTMLDivElement;
   enemyTrackerElements = new Map<number, HTMLDivElement>();
+  enemyLockElements = new Map<number, HTMLDivElement>();
   enemyTacticElements = new Map<number, HTMLDivElement>();
   levelChoiceHandler: ((choiceIndex: number) => void) | null = null;
 
@@ -248,6 +258,10 @@ export class GameUi {
     this.enemyTrackerLayer = document.createElement("div");
     this.enemyTrackerLayer.className = "enemy-tracker-layer";
     this.root.append(this.enemyTrackerLayer);
+
+    this.enemyLockLayer = document.createElement("div");
+    this.enemyLockLayer.className = "enemy-lock-layer";
+    this.root.append(this.enemyLockLayer);
 
     this.enemyTacticLayer = document.createElement("div");
     this.enemyTacticLayer.className = "enemy-tactic-layer";
@@ -497,6 +511,41 @@ export class GameUi {
 
       element.remove();
       this.enemyTacticElements.delete(enemyId);
+    }
+  }
+
+  updateEnemyLocks(locks: EnemyLockSnapshot[]): void {
+    const activeIds = new Set<number>();
+
+    for (const lockSnapshot of locks) {
+      activeIds.add(lockSnapshot.enemyId);
+      let element = this.enemyLockElements.get(lockSnapshot.enemyId);
+      if (!element) {
+        element = document.createElement("div");
+        element.className = "enemy-lock-box";
+        element.innerHTML = `
+          <div class="enemy-lock-corner top-left"></div>
+          <div class="enemy-lock-corner top-right"></div>
+          <div class="enemy-lock-corner bottom-left"></div>
+          <div class="enemy-lock-corner bottom-right"></div>
+        `;
+        this.enemyLockElements.set(lockSnapshot.enemyId, element);
+        this.enemyLockLayer.append(element);
+      }
+
+      element.style.left = `${lockSnapshot.screenX}px`;
+      element.style.top = `${lockSnapshot.screenY}px`;
+      element.style.width = `${lockSnapshot.widthPx}px`;
+      element.style.height = `${lockSnapshot.heightPx}px`;
+    }
+
+    for (const [enemyId, element] of this.enemyLockElements) {
+      if (activeIds.has(enemyId)) {
+        continue;
+      }
+
+      element.remove();
+      this.enemyLockElements.delete(enemyId);
     }
   }
 

@@ -25,7 +25,7 @@ import { createEnemyShip } from "./entities/enemies/createEnemyShip";
 import { getEnemyShipDefinition } from "./entities/enemies/enemyDefinitions";
 import { getWeaponDefinition } from "./entities/projectiles/weaponDefinitions";
 import { getPrimaryFireWeapon } from "./entities/ships/loadout";
-import { applyShipControl } from "./entities/ships/shipController";
+import { applyShipControl, wrapAngle } from "./entities/ships/shipController";
 import { PerformanceMonitor } from "./PerformanceMonitor";
 import { createPlayer } from "./player/createPlayer";
 import { getPlayerSkillDefinition } from "./player/progression/skills";
@@ -80,9 +80,14 @@ const ENEMY_TRACK_MAX_DISTANCE = 400;
 const ENEMY_TRACK_AUTO_MARK_RADIUS = 190;
 const ENEMY_TRACK_EDGE_NDC_X = 0.92;
 const ENEMY_TRACK_EDGE_NDC_Y = 0.82;
+const TARGET_LOCK_KEY_CODE = "Tab";
 const COLLISION_RING_COLOR = 0x3dff79;
 const COLLISION_RING_Y_OFFSET = 0.12;
 const ENEMY_TACTIC_LABEL_SCREEN_OFFSET_PX = 18;
+const ENEMY_LOCK_BOX_WIDTH_MULTIPLIER = 1.25;
+const ENEMY_LOCK_BOX_HEIGHT_MULTIPLIER = 0.95;
+const ENEMY_LOCK_BOX_MIN_WIDTH_PX = 28;
+const ENEMY_LOCK_BOX_MIN_HEIGHT_PX = 20;
 const ENEMY_INTERCEPT_LINE_LENGTH = 150;
 const ENEMY_INTERCEPT_LINE_COLOR = 0xff5b5b;
 const ENEMY_INTERCEPT_LINE_FORWARD = new THREE.Vector3(0, 0, 1);
@@ -118,6 +123,8 @@ class BastardoidsApp {
   viewport = new THREE.Vector2();
   world = config.world;
   debugMode = config.debugMode;
+  aiDebugging = config.aiDebugging;
+  aiDebuggingShip = config.aiDebuggingShip;
   showCollisionRings = config.showCollisionRings;
   showEnemyTactic = config.showEnemyTactic;
   showEnemyIntercept = config.showEnemyIntercept;
@@ -178,6 +185,7 @@ class BastardoidsApp {
   afterburnerEffectTime = 0;
   currentSpeedCap = this.playerConfig.maxSpeed;
   levelUpPauseAt: number | null = null;
+  lockedEnemyId: number | null = null;
 
   constructor(container: HTMLElement) {
     this.ui = new GameUi(container);
@@ -198,6 +206,7 @@ class BastardoidsApp {
       removeObjectFromScene: (object) => this.scene.remove(object),
       attachCollisionRing: (entity) => this.attachCollisionRing(entity),
       removeCollisionRing: (entityId) => this.removeCollisionRing(entityId),
+      getTrackingTargetIdForShip: (ship) => this.getTrackingTargetIdForShip(ship),
       grantPlayerRewards: (xpReward, scrapReward) => this.grantPlayerRewards(xpReward, scrapReward),
       splitLargeAsteroid: (asteroid) => this.splitLargeAsteroid(asteroid),
       destroyAsteroid: (asteroid, emitExplosion) => this.destroyAsteroid(asteroid, emitExplosion),
@@ -405,6 +414,12 @@ class BastardoidsApp {
       return;
     }
 
+    if (event.code === TARGET_LOCK_KEY_CODE && this.isPlaying()) {
+      event.preventDefault();
+      this.cycleTargetLock();
+      return;
+    }
+
     this.keys.add(event.key.toLowerCase());
 
     if (event.code === "Space" && this.isPlaying()) {
@@ -463,13 +478,18 @@ class BastardoidsApp {
     this.afterburnerEffectTime = 0;
     this.currentSpeedCap = this.resolvedPlayerStats.config.maxSpeed;
     this.levelUpPauseAt = null;
+    this.lockedEnemyId = null;
     this.keys.clear();
     this.primaryMouseDown = false;
     this.clearEntities();
     this.createPlayer();
-    this.spawnDirector.spawnInitialAsteroids(this.player, (size, position, velocity) =>
-      this.createAsteroid(size, position, velocity),
-    );
+    if (this.aiDebugging) {
+      this.spawnAiDebugEnemy();
+    } else {
+      this.spawnDirector.spawnInitialAsteroids(this.player, (size, position, velocity) =>
+        this.createAsteroid(size, position, velocity),
+      );
+    }
     this.updateHud();
     this.ui.hideMenu();
     this.ui.hideLevelUp();
@@ -482,6 +502,7 @@ class BastardoidsApp {
     this.stopLoopedMovementAudio();
     this.clearEntities();
     this.levelUpPauseAt = null;
+    this.lockedEnemyId = null;
     this.keys.clear();
     this.ui.setGameplayCursorHidden(false);
     this.ui.hideLevelUp();
@@ -494,9 +515,11 @@ class BastardoidsApp {
     this.keys.clear();
     this.primaryMouseDown = false;
     this.levelUpPauseAt = null;
+    this.lockedEnemyId = null;
     this.ui.setGameplayCursorHidden(false);
     this.clearEnemyInterceptLines();
     this.ui.updateEnemyTrackers([]);
+    this.ui.updateEnemyLocks([]);
     this.ui.updateEnemyTactics([]);
     if (this.progression.totalXp > this.highestXp) {
       this.highestXp = this.progression.totalXp;
@@ -657,13 +680,36 @@ class BastardoidsApp {
     this.updatePointerWorld();
   }
 
-  spawnEnemy(name: EnemyShipName, position: THREE.Vector3): void {
+  spawnEnemy(
+    name: EnemyShipName,
+    position: THREE.Vector3,
+    options?: { hullOverride?: number },
+  ): void {
     const definition = getEnemyShipDefinition(name);
     const createdEnemy = createEnemyShip(definition, this.nextId++, position);
+    if (options?.hullOverride !== undefined) {
+      createdEnemy.enemy.maxHull = options.hullOverride;
+      createdEnemy.enemy.hull = options.hullOverride;
+    }
     this.enemies.set(createdEnemy.enemy.id, createdEnemy.enemy);
     this.enemyShields.set(createdEnemy.enemy.id, createdEnemy.shield);
     this.scene.add(createdEnemy.enemy.mesh);
     this.attachCollisionRing(createdEnemy.enemy);
+  }
+
+  spawnAiDebugEnemy(): void {
+    if (!this.player) {
+      return;
+    }
+
+    const angle = Math.random() * Math.PI * 2;
+    const distance = THREE.MathUtils.randFloat(140, 200);
+    const position = this.player.position
+      .clone()
+      .add(new THREE.Vector3(Math.sin(angle) * distance, 0, Math.cos(angle) * distance));
+    this.spawnEnemy(this.aiDebuggingShip, position, {
+      hullOverride: 10000,
+    });
   }
 
   createAsteroid(
@@ -761,17 +807,19 @@ class BastardoidsApp {
     this.updateShieldRegeneration(delta);
     this.updateAfterburner(delta);
     const { forward: cameraForward, right: cameraRight } = this.getCameraPlanarAxes();
-    this.spawnDirector.update({
-      delta,
-      elapsed: this.elapsed,
-      player: this.player,
-      enemies: this.enemies.values(),
-      cameraForward,
-      cameraRight,
-      getPlayerBounds: (distanceScreens) => this.getPlayerBounds(distanceScreens),
-      spawnEnemy: (name, position) => this.spawnEnemy(name, position),
-      createAsteroid: (size, position, velocity) => this.createAsteroid(size, position, velocity),
-    });
+    if (!this.aiDebugging) {
+      this.spawnDirector.update({
+        delta,
+        elapsed: this.elapsed,
+        player: this.player,
+        enemies: this.enemies.values(),
+        cameraForward,
+        cameraRight,
+        getPlayerBounds: (distanceScreens) => this.getPlayerBounds(distanceScreens),
+        spawnEnemy: (name, position) => this.spawnEnemy(name, position),
+        createAsteroid: (size, position, velocity) => this.createAsteroid(size, position, velocity),
+      });
+    }
 
     this.integratePlayer(delta);
     this.integrateEnemyShips(delta);
@@ -902,7 +950,12 @@ class BastardoidsApp {
         preserveOverspeed: true,
       });
 
-      if (intent.firePrimary) {
+      if (
+        intent.firePrimary &&
+        intent.targetYaw !== null &&
+        Math.abs(wrapAngle(intent.targetYaw - enemy.yaw)) <=
+          THREE.MathUtils.degToRad(enemy.definition.aimToleranceDegrees)
+      ) {
         const fired = this.combat.fireShipPrimaryWeapon(enemy, enemy.definition, {
           elapsed: this.elapsed,
           resolvedPlayerStats: this.resolvedPlayerStats,
@@ -1093,6 +1146,7 @@ class BastardoidsApp {
       nextLevelXp: xpProgress.nextLevelXp,
     });
     this.ui.updateEnemyTrackers(this.buildEnemyTrackerSnapshots());
+    this.ui.updateEnemyLocks(this.buildEnemyLockSnapshots());
     this.ui.updateEnemyTactics(this.buildEnemyTacticSnapshots());
     this.ui.updateShipStatus({
       hull: this.player?.hull ?? 0,
@@ -1215,6 +1269,52 @@ class BastardoidsApp {
     }
 
     return snapshots;
+  }
+
+  buildEnemyLockSnapshots(): Array<{
+    enemyId: number;
+    screenX: number;
+    screenY: number;
+    widthPx: number;
+    heightPx: number;
+  }> {
+    const lockedEnemy = this.getLockedEnemy();
+    if (!this.isGameplayVisible() || !lockedEnemy) {
+      return [];
+    }
+
+    const visibility = this.getEnemyScreenVisibility(lockedEnemy);
+    if (!visibility.visible) {
+      return [];
+    }
+
+    const cameraRight = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0).normalize();
+    const cameraUp = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1).normalize();
+    const centerProjected = lockedEnemy.position.clone().project(this.camera);
+    const widthProjected = lockedEnemy.position
+      .clone()
+      .addScaledVector(cameraRight, lockedEnemy.radius * ENEMY_LOCK_BOX_WIDTH_MULTIPLIER)
+      .project(this.camera);
+    const heightProjected = lockedEnemy.position
+      .clone()
+      .addScaledVector(cameraUp, lockedEnemy.radius * ENEMY_LOCK_BOX_HEIGHT_MULTIPLIER)
+      .project(this.camera);
+    const halfWidthPx = Math.max(
+      ENEMY_LOCK_BOX_MIN_WIDTH_PX * 0.5,
+      Math.abs(widthProjected.x - centerProjected.x) * this.viewport.x * 0.5 + 6,
+    );
+    const halfHeightPx = Math.max(
+      ENEMY_LOCK_BOX_MIN_HEIGHT_PX * 0.5,
+      Math.abs(heightProjected.y - centerProjected.y) * this.viewport.y * 0.5 + 6,
+    );
+
+    return [{
+      enemyId: lockedEnemy.id,
+      screenX: ((visibility.ndc.x + 1) * this.viewport.x) / 2,
+      screenY: ((1 - visibility.ndc.y) * this.viewport.y) / 2,
+      widthPx: halfWidthPx * 2,
+      heightPx: halfHeightPx * 2,
+    }];
   }
 
   getEnemyScreenVisibility(enemy: EnemyShipEntity): {
@@ -1457,6 +1557,9 @@ class BastardoidsApp {
 
   destroyEnemy(enemy: EnemyShipEntity, emitExplosion = true): void {
     enemy.alive = false;
+    if (this.lockedEnemyId === enemy.id) {
+      this.lockedEnemyId = null;
+    }
     this.enemies.delete(enemy.id);
     this.enemyShields.delete(enemy.id);
     this.removeCollisionRing(enemy.id);
@@ -1485,12 +1588,14 @@ class BastardoidsApp {
     this.collisionRingRoot.clear();
     this.clearEnemyInterceptLines();
     this.ui.updateEnemyTrackers([]);
+    this.ui.updateEnemyLocks([]);
     this.ui.updateEnemyTactics([]);
 
     if (this.player) {
       this.scene.remove(this.player.mesh);
     }
     this.player = null;
+    this.lockedEnemyId = null;
     this.playerLines = null;
     this.playerShield = null;
     this.playerVentEffect = null;
@@ -1523,6 +1628,7 @@ class BastardoidsApp {
     this.removeCollisionRing(player.id);
     this.scene.remove(player.mesh);
     this.player = null;
+    this.lockedEnemyId = null;
     this.playerLines = null;
     this.playerShield = null;
     this.playerVentEffect = null;
@@ -1730,6 +1836,113 @@ class BastardoidsApp {
     const deltaX = Math.abs(position.x - this.player.position.x);
     const deltaZ = Math.abs(position.z - this.player.position.z);
     return deltaX > bounds.halfWidth || deltaZ > bounds.halfDepth;
+  }
+
+  cycleTargetLock(): void {
+    const candidates = this.getTargetLockCandidates();
+    if (candidates.length === 0) {
+      this.lockedEnemyId = null;
+      return;
+    }
+
+    const lockedEnemy = this.getLockedEnemy();
+    if (!lockedEnemy) {
+      this.lockedEnemyId = candidates[0]?.id ?? null;
+      return;
+    }
+
+    const currentIndex = candidates.findIndex((enemy) => enemy.id === lockedEnemy.id);
+    if (currentIndex < 0) {
+      this.lockedEnemyId = candidates[0]?.id ?? null;
+      return;
+    }
+
+    this.lockedEnemyId =
+      currentIndex < candidates.length - 1
+        ? candidates[currentIndex + 1]?.id ?? null
+        : null;
+  }
+
+  getLockedEnemy(): EnemyShipEntity | null {
+    if (this.lockedEnemyId === null) {
+      return null;
+    }
+
+    const enemy = this.enemies.get(this.lockedEnemyId) ?? null;
+    if (!enemy || !this.isEnemyAvailableForTargetLock(enemy)) {
+      this.lockedEnemyId = null;
+      return null;
+    }
+
+    return enemy;
+  }
+
+  getTrackingTargetIdForShip(ship: ShipEntity): number | null {
+    if (ship.faction === "player") {
+      return this.getLockedEnemy()?.id ?? null;
+    }
+
+    const targetShipId = ship.blackboard.targetShipId;
+    if (
+      targetShipId === null ||
+      !this.player ||
+      !this.player.alive ||
+      this.player.id !== targetShipId
+    ) {
+      return null;
+    }
+
+    return targetShipId;
+  }
+
+  getTargetLockCandidates(): EnemyShipEntity[] {
+    if (!this.player) {
+      return [];
+    }
+
+    return [...this.enemies.values()]
+      .filter((enemy) => this.isEnemyAvailableForTargetLock(enemy))
+      .sort((first, second) => {
+        const distanceDifference =
+          this.getEnemyDistanceToPlayer(first) - this.getEnemyDistanceToPlayer(second);
+        return Math.abs(distanceDifference) > 0.001
+          ? distanceDifference
+          : first.id - second.id;
+      });
+  }
+
+  isEnemyAvailableForTargetLock(enemy: EnemyShipEntity): boolean {
+    if (!this.player || !enemy.alive) {
+      return false;
+    }
+
+    const visibility = this.getEnemyScreenVisibility(enemy);
+    if (visibility.visible) {
+      return true;
+    }
+
+    const distanceUnits = this.getEnemyDistanceToPlayer(enemy);
+    if (distanceUnits <= ENEMY_TRACK_AUTO_MARK_RADIUS) {
+      return true;
+    }
+
+    const tracking = enemy.blackboard.screenTracking;
+    return (
+      tracking.hasBeenSeen &&
+      this.elapsed - tracking.lastSeenAt <= ENEMY_TRACK_PERSIST_SECONDS &&
+      distanceUnits <= ENEMY_TRACK_MAX_DISTANCE
+    );
+  }
+
+  getEnemyDistanceToPlayer(enemy: EnemyShipEntity): number {
+    if (!this.player) {
+      return Infinity;
+    }
+
+    return Math.hypot(
+      enemy.position.x - this.player.position.x,
+      enemy.position.z - this.player.position.z,
+    );
   }
 }
 

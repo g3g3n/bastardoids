@@ -413,6 +413,12 @@ body {
   pointer-events: none;
 }
 
+.enemy-lock-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 .enemy-tactic-layer {
   position: absolute;
   inset: 0;
@@ -470,6 +476,51 @@ body {
   color: #ffad5a;
   text-shadow: 0 0 8px rgba(255, 124, 38, 0.45);
   white-space: nowrap;
+}
+
+.enemy-lock-box {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 0 10px rgba(255, 73, 73, 0.42));
+}
+
+.enemy-lock-corner {
+  position: absolute;
+  width: 16%;
+  height: 20%;
+  min-width: 8px;
+  min-height: 8px;
+  border-color: #ff5b5b;
+  border-style: solid;
+  border-width: 0;
+}
+
+.enemy-lock-corner.top-left {
+  top: 0;
+  left: 0;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+
+.enemy-lock-corner.top-right {
+  top: 0;
+  right: 0;
+  border-top-width: 2px;
+  border-right-width: 2px;
+}
+
+.enemy-lock-corner.bottom-left {
+  bottom: 0;
+  left: 0;
+  border-bottom-width: 2px;
+  border-left-width: 2px;
+}
+
+.enemy-lock-corner.bottom-right {
+  right: 0;
+  bottom: 0;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
 }
 
 .menu {

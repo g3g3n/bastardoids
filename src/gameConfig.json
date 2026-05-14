@@ -1,8 +1,10 @@
 {
   "debugMode": true,
-  "showCollisionRings": true,
+  "aiDebugging": false,
+  "aiDebuggingShip": "Hunter T",
+  "showCollisionRings": false,
   "showEnemyTactic": true,
-  "showEnemyIntercept": true,
+  "showEnemyIntercept": false,
   "showEmergencyVentEffect": true,
   "world": {
     "asteroidDistanceScreens": 5.0,
@@ -30,6 +32,7 @@
   "player": {
     "hullMass": 24.5,
     "hull": 40,
+    "armor": 0,
     "shield": 40,
     "shieldRegen": 15,
     "shieldRegenDelaySeconds": 3.0,
@@ -42,7 +45,7 @@
     "maxSpeed": 32,
     "strafeMaxSpeed": 14,
     "shipModel": "ship1",
-    "weapon1": "lightPlasmaCannon",
+    "weapon1": "srmLocust",
     "visualScale": 1.65,
     "turnRate": 2855.25,
     "turnDamping": 1215,
@@ -64,7 +67,7 @@
     "maxSpread": 1.4,
     "spawnJitter": 0.25,
     "forwardOffset": -2.45,
-    "forwardSideOffset": 0.72,
+    "forwardSideOffset": 0.62,
     "reverseOffset": 3.05,
     "reverseSideOffset": 0.4,
     "sideOffset": 1.9,

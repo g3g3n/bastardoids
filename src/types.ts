@@ -23,13 +23,21 @@ export type ShipModelName =
   | "ship6"
   | "ship7"
   | "ship8"
-  | "ship9";
-export type WeaponName = "laser" | "kineticTorpedo" | "plasmaOrb" | "lightPlasmaCannon";
+  | "ship9"
+  | "ship10";
+export type WeaponName =
+  | "laser"
+  | "kineticTorpedo"
+  | "plasmaOrb"
+  | "lightPlasmaCannon"
+  | "srmLocust";
+export type WeaponType = "energy" | "kinetic" | "explosive" | "thermal";
 export type WeaponVisualName =
   | "laserBolt"
   | "kineticTorpedo"
   | "plasmaOrb"
-  | "lightPlasmaCannon";
+  | "lightPlasmaCannon"
+  | "srmLocust";
 export type SoundEffectName =
   | "afterburnerLoop"
   | "bump1"
@@ -44,11 +52,14 @@ export type SoundEffectName =
   | "thrustersLongLoop";
 export type Faction = "player" | "enemy";
 export type EnemyShipName = "Hunter T" | "Hunter L" | "Hunter P";
+export type OrbitPresetName = "aggressive" | "balanced" | "wide";
 export type EnemyTactic =
   | "closeToRange"
   | "holdRange"
   | "orbitLeft"
   | "orbitRight"
+  | "commitAttack"
+  | "flyBy"
   | "breakAway"
   | "evadePlayerCollision"
   | "evadeObjectCollision"
@@ -108,6 +119,7 @@ export interface ShipMovementConfig {
 
 export interface PlayerConfig extends ShipMovementConfig {
   hull: number;
+  armor: number;
   shield: number;
   shieldRegen: number;
   shieldRegenDelaySeconds: number;
@@ -115,9 +127,11 @@ export interface PlayerConfig extends ShipMovementConfig {
 
 export interface WeaponDefinition {
   name: WeaponName;
+  type: WeaponType;
   visual: WeaponVisualName;
   muzzleOffsetForward: number;
   muzzleOffsetSide: number;
+  tracking?: number;
   fireSound?: SoundEffectName;
   fireVolumePlayer?: number;
   fireVolumeEnemy?: number;
@@ -211,6 +225,8 @@ export interface PhysicsConfig {
 
 export interface GameConfig {
   debugMode: boolean;
+  aiDebugging: boolean;
+  aiDebuggingShip: EnemyShipName;
   showCollisionRings: boolean;
   showEnemyTactic: boolean;
   showEnemyIntercept: boolean;
@@ -232,6 +248,7 @@ export interface ShipStateBase {
   heat: number;
   maxHull: number;
   hull: number;
+  armor: number;
   maxShield: number;
   shield: number;
   shieldRegen: number;
@@ -254,6 +271,7 @@ export interface PlayerState extends ShipStateBase {
 export interface EnemyShipDefinition extends ShipMovementConfig {
   name: EnemyShipName;
   maxHull: number;
+  armor: number;
   shield: number;
   shieldRegen: number;
   shieldRegenDelaySeconds: number;
@@ -266,6 +284,7 @@ export interface EnemyShipDefinition extends ShipMovementConfig {
   aimToleranceDegrees: number;
   avoidanceWeight: number;
   orbitWeight: number;
+  orbitPreset: OrbitPresetName;
   behindWeight: number;
   projectileAvoidanceWeight: number;
   separationWeight: number;
@@ -279,8 +298,6 @@ export interface EnemyShipDefinition extends ShipMovementConfig {
 
 export interface EnemyPerceptionSnapshot {
   distanceToPlayer: number;
-  relativeBearing: number;
-  playerVelocity: Vector3;
   closestApproachPlayerDistance: number;
   playerCollisionRadius: number;
   nearestAsteroidThreatDistance: number;
@@ -302,7 +319,11 @@ export interface EnemyScreenTrackingState {
 export interface EnemyBlackboard {
   preferredRange: number;
   orbitDirection: -1 | 1;
-  slotAngle: number;
+  targetShipId: number | null;
+  commitAttackActive: boolean;
+  commitAttackUntil: number;
+  flyByActive: boolean;
+  flyByDestination: Vector3 | null;
   currentTactic: EnemyTactic;
   engaged: boolean;
   disengageAt: number;
@@ -366,6 +387,8 @@ export interface ProjectileEntity {
   position: Vector3;
   velocity: Vector3;
   facingYaw: number;
+  trackingTargetId: number | null;
+  trackingTurnRate: number | null;
   propulsionDirection: Vector3 | null;
   propulsionTargetSpeed: number | null;
   propulsionThrust: number | null;

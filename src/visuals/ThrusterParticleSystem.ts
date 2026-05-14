@@ -95,8 +95,10 @@ export class ThrusterParticleSystem {
   }
 
   update(context: ThrusterParticleUpdateContext): void {
+    const enemies = [...context.enemies];
+
     this.updatePlayerHoldState(context.delta, context.playerThrusterInputState);
-    this.updateEnemyHoldState(context.delta, context.enemies);
+    this.updateEnemyHoldState(context.delta, enemies);
 
     for (const particle of this.particlePool) {
       if (!particle.active) {
@@ -119,7 +121,7 @@ export class ThrusterParticleSystem {
       this.emitPlayerThrusterParticles("right", context);
     }
 
-    for (const enemy of context.enemies) {
+    for (const enemy of enemies) {
       if (!enemy.alive) {
         continue;
       }
